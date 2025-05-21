@@ -98,6 +98,11 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	isMiko := p.config.IsMiko(blockNumber)
 	isSystemTxsSection := false
 
+	// EIP-2935: Store the parent block hash in the history storage contract
+	if p.config.IsPrague(block.Number()) {
+		ProcessParentBlockHash(block.ParentHash(), vmenv)
+	}
+
 	for i, tx := range block.Transactions() {
 		if isPoSA {
 			if isSystemTx, err := posa.IsSystemTransaction(tx, block.Header()); err != nil {
@@ -141,6 +146,19 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	}
 
 	return receipts, allLogs, *blockContext.InternalTransactions, *usedGas, nil
+}
+
+// ProcessParentBlockHash stores the parent block hash in the history storage contract
+// as per EIP-2935.
+func ProcessParentBlockHash(prevHash common.Hash, vmenv *vm.EVM) {
+	msg := types.NewMessage(consensus.SystemAddress, &params.HistoryStorageAddress, 0, common.Big0, 30_000_000, common.Big0, common.Big0, common.Big0, prevHash.Bytes(), nil, false, nil, nil)
+	vmenv.Reset(NewEVMTxContext(msg), vmenv.StateDB)
+	vmenv.StateDB.AddAddressToAccessList(params.HistoryStorageAddress)
+	_, _, err := vmenv.Call(vm.AccountRef(msg.From()), *msg.To(), msg.Data(), 30_000_000, common.Big0)
+	if err != nil {
+		log.Error("Failed to store parent block hash in history storage contract", "err", err)
+	}
+	vmenv.StateDB.Finalise(true)
 }
 
 func applyTransaction(

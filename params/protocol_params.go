@@ -19,6 +19,8 @@ package params
 import (
 	"math/big"
 	"time"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 const (
@@ -187,6 +189,8 @@ const (
 	MaxBlobsPerBlock            = 6                        // Maximum number of data blobs per block
 	BlobPrunePeriod             = 518400                   // Number of blocks after which to prune old blob
 	BlobKeepPeriod              = 18 * 24 * time.Hour      // The approximate period of time before which the blob is pruned
+
+	HistoryServeWindow = 8192 // Number of blocks to serve historical block hashes for, EIP-2935.
 )
 
 // Gas discount table for BLS12-381 G1 and G2 multi exponentiation operations
@@ -197,4 +201,11 @@ var (
 	GenesisDifficulty      = big.NewInt(131072) // Difficulty of the Genesis block.
 	MinimumDifficulty      = big.NewInt(131072) // The minimum that the difficulty may ever be.
 	DurationLimit          = big.NewInt(13)     // The decision boundary on the blocktime duration used to determine whether difficulty should go up or not.
+)
+
+var (
+	// HistoryStorageAddress is where the historical block hashes are stored.
+	HistoryStorageAddress = common.HexToAddress("0x0000F90827F1C53a10cb7A02335B175320002935")
+	// HistoryStorageCode is the code with getters for historical block hashes.
+	HistoryStorageCode = common.FromHex("3373fffffffffffffffffffffffffffffffffffffffe14604657602036036042575f35600143038111604257611fff81430311604257611fff9006545f5260205ff35b5f5ffd5b5f35611fff60014303065500")
 )
