@@ -58,6 +58,7 @@ type jsonWriter interface {
 type BlockNumber int64
 
 const (
+	JustifiedBlockNumber = BlockNumber(-4)
 	FinalizedBlockNumber = BlockNumber(-3)
 	PendingBlockNumber   = BlockNumber(-2)
 	LatestBlockNumber    = BlockNumber(-1)
@@ -65,7 +66,7 @@ const (
 )
 
 // UnmarshalJSON parses the given JSON fragment into a BlockNumber. It supports:
-// - "latest", "earliest" or "pending" as string arguments
+// - "latest", "earliest", "pending", "justified" or "finalized" as string arguments
 // - the block number
 // Returned errors:
 // - an invalid block number error when the given argument isn't a known strings
@@ -86,6 +87,9 @@ func (bn *BlockNumber) UnmarshalJSON(data []byte) error {
 	case "pending":
 		*bn = PendingBlockNumber
 		return nil
+	case "justified":
+		*bn = JustifiedBlockNumber
+		return nil
 	case "finalized":
 		*bn = FinalizedBlockNumber
 		return nil
@@ -103,7 +107,7 @@ func (bn *BlockNumber) UnmarshalJSON(data []byte) error {
 }
 
 // MarshalText implements encoding.TextMarshaler. It marshals:
-// - "latest", "earliest" or "pending" as strings
+// - "latest", "earliest", "pending", "justified" or "finalized" as strings
 // - other numbers as hex
 func (bn BlockNumber) MarshalText() ([]byte, error) {
 	switch bn {
@@ -113,6 +117,8 @@ func (bn BlockNumber) MarshalText() ([]byte, error) {
 		return []byte("latest"), nil
 	case PendingBlockNumber:
 		return []byte("pending"), nil
+	case JustifiedBlockNumber:
+		return []byte("justified"), nil
 	case FinalizedBlockNumber:
 		return []byte("finalized"), nil
 	default:
@@ -159,6 +165,10 @@ func (bnh *BlockNumberOrHash) UnmarshalJSON(data []byte) error {
 		return nil
 	case "pending":
 		bn := PendingBlockNumber
+		bnh.BlockNumber = &bn
+		return nil
+	case "justified":
+		bn := JustifiedBlockNumber
 		bnh.BlockNumber = &bn
 		return nil
 	case "finalized":
