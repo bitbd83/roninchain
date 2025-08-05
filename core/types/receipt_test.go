@@ -314,9 +314,11 @@ func TestDeriveFields(t *testing.T) {
 	// Clear all the computed fields and re-derive them
 	number := big.NewInt(1)
 	hash := common.BytesToHash([]byte{0x03, 0x14})
+	blockTime := uint64(2)
+	blobGasPrice := big.NewInt(0)
 
 	clearComputedFieldsOnReceipts(t, receipts)
-	if err := receipts.DeriveFields(params.TestChainConfig, hash, number.Uint64(), nil, txs); err != nil {
+	if err := receipts.DeriveFields(params.TestChainConfig, hash, number.Uint64(), blockTime, blobGasPrice, txs); err != nil {
 		t.Fatalf("DeriveFields(...) = %v, want <nil>", err)
 	}
 	// Iterate over all the computed fields and check that they're correct
@@ -356,6 +358,9 @@ func TestDeriveFields(t *testing.T) {
 			}
 			if receipts[i].Logs[j].BlockHash != hash {
 				t.Errorf("receipts[%d].Logs[%d].BlockHash = %s, want %s", i, j, receipts[i].Logs[j].BlockHash.String(), hash.String())
+			}
+			if receipts[i].Logs[j].BlockTimestamp != blockTime {
+				t.Errorf("receipts[%d].Logs[%d].BlockTimestamp = %d, want %d", i, j, receipts[i].Logs[j].BlockTimestamp, blockTime)
 			}
 			if receipts[i].Logs[j].TxHash != txs[i].Hash() {
 				t.Errorf("receipts[%d].Logs[%d].TxHash = %s, want %s", i, j, receipts[i].Logs[j].TxHash.String(), txs[i].Hash().String())
