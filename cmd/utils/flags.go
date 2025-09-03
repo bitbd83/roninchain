@@ -19,6 +19,7 @@ package utils
 
 import (
 	"crypto/ecdsa"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"math"
@@ -639,6 +640,17 @@ var (
 	VMEnableDebugFlag = &cli.BoolFlag{
 		Name:     "vmdebug",
 		Usage:    "Record information useful for VM and contract debugging",
+		Category: flags.VMCategory,
+	}
+	VMTraceFlag = &cli.StringFlag{
+		Name:     "vmtrace",
+		Usage:    "Name of tracer which should record internal VM operations (costly)",
+		Category: flags.VMCategory,
+	}
+	VMTraceConfigFlag = &cli.StringFlag{
+		Name:     "vmtrace.config",
+		Usage:    "Tracer configuration (JSON)",
+		Value:    "{}",
 		Category: flags.VMCategory,
 	}
 	RPCGlobalGasCapFlag = &cli.Uint64Flag{
@@ -1349,7 +1361,6 @@ func setWS(ctx *cli.Context, cfg *node.Config) {
 
 	cfg.WSReadBuffer = ctx.Int(WSReadBufferFlag.Name)
 	cfg.WSWriteBuffer = ctx.Int(WSWriteBufferFlag.Name)
-
 }
 
 // setIPC creates an IPC path configuration from the set command line flags,
@@ -2134,6 +2145,13 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	if err := kzg4844.UseCKZG(ctx.String(CryptoKZGFlag.Name) == "ckzg"); err != nil {
 		Fatalf("Failed to set KZG library implementation to %s: %v", ctx.String(CryptoKZGFlag.Name), err)
 	}
+	// VM tracing config.
+	if ctx.IsSet(VMTraceFlag.Name) {
+		if name := ctx.String(VMTraceFlag.Name); name != "" {
+			cfg.VMTrace = name
+			cfg.VMTraceConfig = ctx.String(VMTraceConfigFlag.Name)
+		}
+	}
 	if ctx.IsSet(DisableTxBroadcastFromFlag.Name) {
 		scheme := enode.V4ID{}
 		nodeIds := SplitAndTrim(ctx.String(DisableTxBroadcastFromFlag.Name))
@@ -2404,7 +2422,16 @@ func MakeChain(ctx *cli.Context, stack *node.Node) (chain *core.BlockChain, chai
 		cache.TrieDirtyLimit = ctx.Int(CacheFlag.Name) * ctx.Int(CacheGCFlag.Name) / 100
 	}
 	vmcfg := vm.Config{EnablePreimageRecording: ctx.Bool(VMEnableDebugFlag.Name)}
-
+	if ctx.IsSet(VMTraceFlag.Name) {
+		if name := ctx.String(VMTraceFlag.Name); name != "" {
+			config := json.RawMessage(ctx.String(VMTraceConfigFlag.Name))
+			t, err := tracers.LiveDirectory.New(name, config)
+			if err != nil {
+				Fatalf("Failed to create tracer %q: %v", name, err)
+			}
+			vmcfg.Tracer = t
+		}
+	}
 	// TODO(rjl493456442) disable snapshot generation/wiping if the chain is read only.
 	// Disable transaction indexing/unindexing by default.
 	chain, err = core.NewBlockChain(chainDb, cache, gpec, nil, engine, vmcfg, nil, nil)

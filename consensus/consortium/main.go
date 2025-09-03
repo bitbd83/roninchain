@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus/consortium/v2/finality"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
@@ -115,7 +116,8 @@ func (c *Consortium) Prepare(chain consensus.ChainHeaderReader, header *types.He
 
 // Finalize implements consensus.Engine as a proxy
 func (c *Consortium) Finalize(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, txs *[]*types.Transaction,
-	uncles []*types.Header, receipts *[]*types.Receipt, systemTxs *[]*types.Transaction, internalTxs *[]*types.InternalTransaction, usedGas *uint64) error {
+	uncles []*types.Header, receipts *[]*types.Receipt, systemTxs *[]*types.Transaction, internalTxs *[]*types.InternalTransaction, usedGas *uint64,
+) error {
 	if c.chainConfig.IsConsortiumV2(header.Number) {
 		return c.v2.Finalize(chain, header, state, txs, uncles, receipts, systemTxs, internalTxs, usedGas)
 	}
@@ -125,7 +127,8 @@ func (c *Consortium) Finalize(chain consensus.ChainHeaderReader, header *types.H
 
 // FinalizeAndAssemble implements consensus.Engine as a proxy
 func (c *Consortium) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB,
-	txs []*types.Transaction, uncles []*types.Header, receipts []*types.Receipt) (*types.Block, []*types.Receipt, error) {
+	txs []*types.Transaction, uncles []*types.Header, receipts []*types.Receipt,
+) (*types.Block, []*types.Receipt, error) {
 	if c.chainConfig.IsConsortiumV2(header.Number) {
 		return c.v2.FinalizeAndAssemble(chain, header, state, txs, uncles, receipts)
 	}
@@ -196,7 +199,7 @@ func (c *Consortium) SetGetFenixValidators(fn func() ([]common.Address, error)) 
 
 // IsSystemTransaction implements consensus.PoSA. It is only available on v2 since v1 doesn't have system contract
 func (c *Consortium) IsSystemTransaction(tx *types.Transaction, header *types.Header) (bool, error) {
-	msg, err := tx.AsMessage(types.MakeSigner(c.chainConfig, header.Number), header.BaseFee)
+	msg, err := core.TransactionToMessage(tx, types.MakeSigner(c.chainConfig, header.Number), header.BaseFee)
 	if err != nil {
 		return false, err
 	}
@@ -270,7 +273,7 @@ func (c *Consortium) GetFinalityVoterAt(
 
 // HandleSystemTransaction fixes up the statedb when system transaction
 // goes through ApplyMessage when tracing/debugging
-func HandleSystemTransaction(engine consensus.Engine, statedb *state.StateDB, msg core.Message, block *types.Block) bool {
+func HandleSystemTransaction(engine consensus.Engine, statedb *state.StateDB, msg *core.Message, block *types.Block) bool {
 	consortium, ok := engine.(*Consortium)
 	if !ok {
 		return false
@@ -279,10 +282,10 @@ func HandleSystemTransaction(engine consensus.Engine, statedb *state.StateDB, ms
 	if consortium.chainConfig.IsConsortiumV2(new(big.Int).Add(block.Number(), common.Big1)) {
 		isSystemMsg := consortium.v2.IsSystemMessage(msg, block.Header())
 		if isSystemMsg {
-			if msg.Value().Cmp(common.Big0) > 0 {
+			if msg.Amount.Cmp(common.Big0) > 0 {
 				balance := statedb.GetBalance(consensus.SystemAddress)
-				statedb.SetBalance(consensus.SystemAddress, big.NewInt(0))
-				statedb.AddBalance(block.Coinbase(), balance)
+				statedb.SetBalance(consensus.SystemAddress, big.NewInt(0), tracing.BalanceDecreaseSystemAddress)
+				statedb.AddBalance(block.Coinbase(), balance, tracing.BalanceIncreaseRewardMineBlock)
 			}
 
 			return true

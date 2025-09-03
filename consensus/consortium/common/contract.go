@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus/consortium/generated_contracts/staking"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -194,7 +195,7 @@ func (c *ContractIntegrator) WrapUpEpoch(opts *ApplyTransactOpts) error {
 	if err != nil {
 		return err
 	}
-	msg := types.NewMessage(
+	msg := core.NewMessage(
 		opts.Header.Coinbase,
 		tx.To(),
 		opts.State.GetNonce(opts.Header.Coinbase),
@@ -224,8 +225,8 @@ func (c *ContractIntegrator) WrapUpEpoch(opts *ApplyTransactOpts) error {
 func (c *ContractIntegrator) SubmitBlockReward(opts *ApplyTransactOpts) error {
 	coinbase := opts.Header.Coinbase
 	balance := opts.State.GetBalance(consensus.SystemAddress)
-	opts.State.SetBalance(consensus.SystemAddress, big.NewInt(0))
-	opts.State.AddBalance(coinbase, balance)
+	opts.State.SetBalance(consensus.SystemAddress, big.NewInt(0), tracing.BalanceDecreaseSystemAddress)
+	opts.State.AddBalance(coinbase, balance, tracing.BalanceIncreaseRewardMineBlock)
 
 	nonce := opts.State.GetNonce(c.coinbase)
 	isVenoki := c.chainConfig.IsVenoki(opts.Header.Number)
@@ -235,7 +236,7 @@ func (c *ContractIntegrator) SubmitBlockReward(opts *ApplyTransactOpts) error {
 	}
 	log.Debug("Submitted block reward", "block", opts.Header.Number, "amount", balance.Uint64())
 
-	msg := types.NewMessage(
+	msg := core.NewMessage(
 		opts.Header.Coinbase,
 		tx.To(),
 		opts.State.GetNonce(opts.Header.Coinbase),
@@ -270,7 +271,7 @@ func (c *ContractIntegrator) Slash(opts *ApplyTransactOpts, spoiledValidator com
 		return err
 	}
 
-	msg := types.NewMessage(
+	msg := core.NewMessage(
 		opts.Header.Coinbase,
 		tx.To(),
 		opts.State.GetNonce(opts.Header.Coinbase),
@@ -302,7 +303,7 @@ func (c *ContractIntegrator) FinalityReward(opts *ApplyTransactOpts, votedValida
 		return err
 	}
 
-	msg := types.NewMessage(
+	msg := core.NewMessage(
 		opts.Header.Coinbase,
 		tx.To(),
 		opts.State.GetNonce(opts.Header.Coinbase),
@@ -473,7 +474,7 @@ type ApplyTransactOpts struct {
 // ApplyTransaction attempts to apply a transaction to the given state database
 // and uses the input parameters for its environment. It returns nil if applied success
 // and an error if the transaction failed, indicating the block was invalid.
-func ApplyTransaction(msg types.Message, opts *ApplyTransactOpts) (err error) {
+func ApplyTransaction(msg *core.Message, opts *ApplyTransactOpts) (err error) {
 	var failed bool
 
 	signer := opts.Signer
@@ -486,13 +487,13 @@ func ApplyTransaction(msg types.Message, opts *ApplyTransactOpts) (err error) {
 	header := opts.Header
 	receipts := opts.Receipts
 	usedGas := opts.UsedGas
-	nonce := msg.Nonce()
+	nonce := msg.Nonce
 
 	// TODO(linh): This function is deprecated. Shall we replace it with NewTx?
-	expectedTx := types.NewTransaction(nonce, *msg.To(), msg.Value(), msg.Gas(), msg.GasPrice(), msg.Data())
+	expectedTx := types.NewTransaction(nonce, *msg.To, msg.Amount, msg.GasLimit, msg.GasPrice, msg.Data)
 	expectedHash := signer.Hash(expectedTx)
 
-	sender := msg.From()
+	sender := msg.From
 	// An empty/non-existing account's code hash is 0x000...00, while an existing account with no code has code hash
 	// that is equal to crypto.Keccak256Hash(nil)
 	if codeHash := opts.State.GetCodeHash(sender); codeHash != crypto.Keccak256Hash(nil) && codeHash != (common.Hash{}) {
@@ -504,7 +505,7 @@ func ApplyTransaction(msg types.Message, opts *ApplyTransactOpts) (err error) {
 	}
 
 	if mining {
-		expectedTx, err = signTxFn(accounts.Account{Address: msg.From()}, expectedTx, chainConfig.ChainID)
+		expectedTx, err = signTxFn(accounts.Account{Address: msg.From}, expectedTx, chainConfig.ChainID)
 		if err != nil {
 			return err
 		}
@@ -530,7 +531,7 @@ func ApplyTransaction(msg types.Message, opts *ApplyTransactOpts) (err error) {
 		*receivedTxs = (*receivedTxs)[1:]
 	}
 	opts.State.SetTxContext(expectedTx.Hash(), len(*txs))
-	opts.State.SetNonce(msg.From(), nonce+1)
+	opts.State.SetNonce(msg.From, nonce+1)
 	gasUsed, err := applyMessage(opts.ApplyMessageOpts, expectedTx)
 	if err != nil {
 		failed = true

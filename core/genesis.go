@@ -28,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -80,7 +81,9 @@ func hashAlloc(ga *types.GenesisAlloc) (common.Hash, error) {
 		return common.Hash{}, err
 	}
 	for addr, account := range *ga {
-		statedb.AddBalance(addr, account.Balance)
+		if account.Balance != nil {
+			statedb.AddBalance(addr, account.Balance, tracing.BalanceIncreaseGenesisBalance)
+		}
 		statedb.SetCode(addr, account.Code)
 		statedb.SetNonce(addr, account.Nonce)
 		for key, value := range account.Storage {
@@ -100,7 +103,7 @@ func flushAlloc(ga *types.GenesisAlloc, db ethdb.Database, triedb *trie.Database
 	}
 	for addr, account := range *ga {
 		if account.Balance != nil {
-			statedb.AddBalance(addr, account.Balance)
+			statedb.AddBalance(addr, account.Balance, tracing.BalanceIncreaseGenesisBalance)
 		}
 		statedb.SetCode(addr, account.Code)
 		statedb.SetNonce(addr, account.Nonce)
@@ -125,6 +128,37 @@ func flushAlloc(ga *types.GenesisAlloc, db ethdb.Database, triedb *trie.Database
 	}
 	rawdb.WriteGenesisStateSpec(db, blockhash, blob)
 	return nil
+}
+
+func getGenesisState(db ethdb.Database, blockhash common.Hash) (alloc types.GenesisAlloc, err error) {
+	blob := rawdb.ReadGenesisStateSpec(db, blockhash)
+	if len(blob) != 0 {
+		if err := alloc.UnmarshalJSON(blob); err != nil {
+			return nil, err
+		}
+
+		return alloc, nil
+	}
+
+	// Genesis allocation is missing and there are several possibilities:
+	// the node is legacy which doesn't persist the genesis allocation or
+	// the persisted allocation is just lost.
+	// - supported networks(mainnet, testnets), recover with defined allocations
+	// - private network, can't recover
+	var genesis *Genesis
+	switch blockhash {
+	case params.MainnetGenesisHash:
+		genesis = DefaultGenesisBlock()
+	case params.GoerliGenesisHash:
+		genesis = DefaultGoerliGenesisBlock()
+	case params.SepoliaGenesisHash:
+		genesis = DefaultSepoliaGenesisBlock()
+	}
+	if genesis != nil {
+		return genesis.Alloc, nil
+	}
+
+	return nil, nil
 }
 
 // field type overrides for gencodec

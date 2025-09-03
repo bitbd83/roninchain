@@ -83,6 +83,12 @@ func (b *BlockGen) SetDifficulty(diff *big.Int) {
 	b.header.Difficulty = diff
 }
 
+// SetBaseFee sets the base fee field of the generated block. This method is
+// used only for EIP-1559 tests.
+func (b *BlockGen) SetBaseFee(baseFee *big.Int) {
+	b.header.BaseFee = baseFee
+}
+
 // Difficulty returns the currently calculated difficulty of the block.
 func (b *BlockGen) Difficulty() *big.Int {
 	return new(big.Int).Set(b.header.Difficulty)
@@ -100,7 +106,7 @@ func (b *BlockGen) addTx(bc *BlockChain, vmConfig vm.Config, tx *types.Transacti
 		b.SetCoinbase(common.Address{})
 	}
 	b.statedb.SetTxContext(tx.Hash(), len(b.txs))
-	receipt, _, err := ApplyTransaction(b.config, bc, &b.header.Coinbase, b.gasPool, b.statedb, b.header, tx, &b.header.GasUsed, vmConfig, &ReceiptBloomGenerator{})
+	receipt, _, err := ApplyTransaction(b.config, bc, &b.header.Coinbase, b.gasPool, b.statedb, b.header, tx, &b.header.GasUsed, vmConfig)
 	if err != nil {
 		panic(err)
 	}

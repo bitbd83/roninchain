@@ -18,6 +18,7 @@ package vm
 
 import (
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
@@ -251,6 +252,7 @@ func opSha3(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byt
 	size.SetBytes(interpreter.hasherBuf[:])
 	return nil, nil
 }
+
 func opAddress(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	scope.Stack.push(new(uint256.Int).SetBytes(scope.Contract.Address().Bytes()))
 	return nil, nil
@@ -267,6 +269,7 @@ func opOrigin(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 	scope.Stack.push(new(uint256.Int).SetBytes(interpreter.evm.Origin.Bytes()))
 	return nil, nil
 }
+
 func opCaller(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	scope.Stack.push(new(uint256.Int).SetBytes(scope.Contract.Caller().Bytes()))
 	return nil, nil
@@ -329,7 +332,7 @@ func opReturnDataCopy(pc *uint64, interpreter *EVMInterpreter, scope *ScopeConte
 		return nil, ErrReturnDataOutOfBounds
 	}
 	// we can reuse dataOffset now (aliasing it for clarity)
-	var end = dataOffset
+	end := dataOffset
 	end.Add(&dataOffset, &length)
 	end64, overflow := end.Uint64WithOverflow()
 	if overflow || uint64(len(interpreter.returnData)) < end64 {
@@ -580,9 +583,9 @@ func opCreate(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 	// reuse size int for stackvalue
 	stackvalue := size
 
-	scope.Contract.UseGas(gas)
-	//TODO: use uint256.Int instead of converting with toBig()
-	var bigVal = big0
+	scope.Contract.UseGas(gas, interpreter.evm.Config.Tracer, tracing.GasChangeCallContractCreation)
+	// TODO: use uint256.Int instead of converting with toBig()
+	bigVal := big0
 	if !value.IsZero() {
 		bigVal = value.ToBig()
 	}
@@ -600,7 +603,7 @@ func opCreate(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 		stackvalue.SetBytes(addr.Bytes())
 	}
 	scope.Stack.push(&stackvalue)
-	scope.Contract.Gas += returnGas
+	scope.Contract.RefundGas(returnGas, interpreter.evm.Config.Tracer, tracing.GasChangeCallLeftOverRefunded)
 
 	// call publish event to publish CREATE event
 	interpreter.evm.PublishEvent(CREATE, counter, scope.Contract.Address(), addr, bigVal, input, res, suberr)
@@ -621,10 +624,10 @@ func opCreate2(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]
 	)
 	// Apply EIP150
 	gas -= gas / 64
-	scope.Contract.UseGas(gas)
+	scope.Contract.UseGas(gas, interpreter.evm.Config.Tracer, tracing.GasChangeCallContractCreation2)
 	// reuse size int for stackvalue
 	stackvalue := size
-	//TODO: use uint256.Int instead of converting with toBig()
+	// TODO: use uint256.Int instead of converting with toBig()
 	bigEndowment := big0
 	if !endowment.IsZero() {
 		bigEndowment = endowment.ToBig()
@@ -639,7 +642,7 @@ func opCreate2(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]
 		stackvalue.SetBytes(addr.Bytes())
 	}
 	scope.Stack.push(&stackvalue)
-	scope.Contract.Gas += returnGas
+	scope.Contract.RefundGas(returnGas, interpreter.evm.Config.Tracer, tracing.GasChangeCallLeftOverRefunded)
 
 	// call publish event to publish CREATE2 event
 	interpreter.evm.PublishEvent(CREATE2, counter, scope.Contract.Address(), addr, bigEndowment, input, res, suberr)
@@ -664,8 +667,8 @@ func opCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byt
 	cpyArgs := make([]byte, len(args))
 	copy(cpyArgs, args)
 
-	var bigVal = big0
-	//TODO: use uint256.Int instead of converting with toBig()
+	bigVal := big0
+	// TODO: use uint256.Int instead of converting with toBig()
 	// By using big0 here, we save an alloc for the most common case (non-ether-transferring contract calls),
 	// but it would make more sense to extend the usage of uint256.Int
 	if !value.IsZero() {
@@ -684,7 +687,7 @@ func opCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byt
 	if err == nil || err == ErrExecutionReverted {
 		scope.Memory.Set(retOffset.Uint64(), retSize.Uint64(), ret)
 	}
-	scope.Contract.Gas += returnGas
+	scope.Contract.RefundGas(returnGas, interpreter.evm.Config.Tracer, tracing.GasChangeCallLeftOverRefunded)
 	// call publish event to publish CALL event
 	interpreter.evm.PublishEvent(CALL, counter, scope.Contract.Address(), toAddr, bigVal, cpyArgs, ret, err)
 	return ret, nil
@@ -702,8 +705,8 @@ func opCallCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 	// Get arguments from the memory.
 	args := scope.Memory.GetPtr(int64(inOffset.Uint64()), int64(inSize.Uint64()))
 
-	//TODO: use uint256.Int instead of converting with toBig()
-	var bigVal = big0
+	// TODO: use uint256.Int instead of converting with toBig()
+	bigVal := big0
 	if !value.IsZero() {
 		gas += params.CallStipend
 		bigVal = value.ToBig()
@@ -719,7 +722,7 @@ func opCallCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 	if err == nil || err == ErrExecutionReverted {
 		scope.Memory.Set(retOffset.Uint64(), retSize.Uint64(), ret)
 	}
-	scope.Contract.Gas += returnGas
+	scope.Contract.RefundGas(returnGas, interpreter.evm.Config.Tracer, tracing.GasChangeCallLeftOverRefunded)
 
 	return ret, nil
 }
@@ -749,7 +752,7 @@ func opDelegateCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext
 	if err == nil || err == ErrExecutionReverted {
 		scope.Memory.Set(retOffset.Uint64(), retSize.Uint64(), ret)
 	}
-	scope.Contract.Gas += returnGas
+	scope.Contract.RefundGas(returnGas, interpreter.evm.Config.Tracer, tracing.GasChangeCallLeftOverRefunded)
 	// call publish event to publish CALL event
 	interpreter.evm.PublishEvent(DELEGATECALL, counter, scope.Contract.Address(), toAddr, scope.Contract.Value(), cpyArgs, ret, err)
 
@@ -778,7 +781,7 @@ func opStaticCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) 
 	if err == nil || err == ErrExecutionReverted {
 		scope.Memory.Set(retOffset.Uint64(), retSize.Uint64(), ret)
 	}
-	scope.Contract.Gas += returnGas
+	scope.Contract.RefundGas(returnGas, interpreter.evm.Config.Tracer, tracing.GasChangeCallLeftOverRefunded)
 
 	return ret, nil
 }
@@ -804,11 +807,15 @@ func opStop(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byt
 func opSelfdestruct(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	beneficiary := scope.Stack.pop()
 	balance := interpreter.evm.StateDB.GetBalance(scope.Contract.Address())
-	interpreter.evm.StateDB.AddBalance(beneficiary.Bytes20(), balance)
+	interpreter.evm.StateDB.AddBalance(beneficiary.Bytes20(), balance, tracing.BalanceIncreaseSelfdestruct)
 	interpreter.evm.StateDB.SelfDestruct(scope.Contract.Address())
-	if interpreter.evm.Config.Tracer != nil {
-		interpreter.cfg.Tracer.CaptureEnter(SELFDESTRUCT, scope.Contract.Address(), beneficiary.Bytes20(), []byte{}, 0, balance)
-		interpreter.cfg.Tracer.CaptureExit([]byte{}, 0, nil)
+	if tracer := interpreter.evm.Config.Tracer; tracer != nil {
+		if tracer.OnEnter != nil {
+			tracer.OnEnter(interpreter.evm.depth, byte(SELFDESTRUCT), scope.Contract.Address(), beneficiary.Bytes20(), []byte{}, 0, balance, interpreter.evm.Context.Counter)
+		}
+		if tracer.OnExit != nil {
+			tracer.OnExit(interpreter.evm.depth, []byte{}, 0, nil, false)
+		}
 	}
 	return nil, nil
 }
@@ -816,12 +823,16 @@ func opSelfdestruct(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext
 func opSelfdestruct6780(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	beneficiary := scope.Stack.pop()
 	balance := interpreter.evm.StateDB.GetBalance(scope.Contract.Address())
-	interpreter.evm.StateDB.SubBalance(scope.Contract.Address(), balance)
-	interpreter.evm.StateDB.AddBalance(beneficiary.Bytes20(), balance)
+	interpreter.evm.StateDB.SubBalance(scope.Contract.Address(), balance, tracing.BalanceDecreaseSelfdestruct)
+	interpreter.evm.StateDB.AddBalance(beneficiary.Bytes20(), balance, tracing.BalanceIncreaseSelfdestruct)
 	interpreter.evm.StateDB.SelfDestruct6780(scope.Contract.Address())
 	if tracer := interpreter.evm.Config.Tracer; tracer != nil {
-		tracer.CaptureEnter(SELFDESTRUCT, scope.Contract.Address(), beneficiary.Bytes20(), []byte{}, 0, balance)
-		tracer.CaptureExit([]byte{}, 0, nil)
+		if tracer.OnEnter != nil {
+			tracer.OnEnter(interpreter.evm.depth, byte(SELFDESTRUCT), scope.Contract.Address(), beneficiary.Bytes20(), []byte{}, 0, balance, interpreter.evm.Context.Counter)
+		}
+		if tracer.OnExit != nil {
+			tracer.OnExit(interpreter.evm.depth, []byte{}, 0, nil, false)
+		}
 	}
 	return nil, nil
 }

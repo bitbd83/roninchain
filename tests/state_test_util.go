@@ -33,6 +33,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -257,7 +258,7 @@ func (t *StateTest) RunNoVerify(subtest StateSubtest, vmconfig vm.Config, snapsh
 		// - the block body is verified against the header in block_validator.go:ValidateBody
 		// Here, we just do this shortcut smaller fix, since state tests do not
 		// utilize those codepaths
-		if len(msg.BlobHashes())*params.BlobTxBlobGasPerBlob > params.MaxBlobGasPerBlock {
+		if len(msg.BlobHashes)*params.BlobTxBlobGasPerBlob > params.MaxBlobGasPerBlock {
 			return nil, nil, nil, common.Hash{}, errors.New("blob gas exceeds maximum")
 		}
 	}
@@ -287,6 +288,15 @@ func (t *StateTest) RunNoVerify(subtest StateSubtest, vmconfig vm.Config, snapsh
 		context.BlobBaseFee = eip4844.CalcBlobFee(*t.json.Env.ExcessBlobGas)
 	}
 	evm := vm.NewEVM(context, txContext, statedb, config, vmconfig)
+
+	if tracer := vmconfig.Tracer; tracer != nil && tracer.OnTxStart != nil {
+		tracer.OnTxStart(evm.GetVMContext(), nil, msg.From)
+		if evm.Config.Tracer.OnTxEnd != nil {
+			defer func() {
+				evm.Config.Tracer.OnTxEnd(nil, err)
+			}()
+		}
+	}
 	// Execute the message.
 	snapshot := statedb.Snapshot()
 	gaspool := new(core.GasPool)
@@ -300,7 +310,7 @@ func (t *StateTest) RunNoVerify(subtest StateSubtest, vmconfig vm.Config, snapsh
 	// - the coinbase suicided, or
 	// - there are only 'bad' transactions, which aren't executed. In those cases,
 	//   the coinbase gets no txfee, so isn't created, and thus needs to be touched
-	statedb.AddBalance(block.Coinbase(), new(big.Int))
+	statedb.AddBalance(block.Coinbase(), new(big.Int), tracing.BalanceChangeUnspecified)
 	// Commit block
 	statedb.Commit(block.NumberU64(), config.IsEIP158(block.Number()))
 	// And _now_ get the state root
@@ -325,7 +335,7 @@ func MakePreState(db ethdb.Database, accounts types.GenesisAlloc, snapshotter bo
 	for addr, a := range accounts {
 		statedb.SetCode(addr, a.Code)
 		statedb.SetNonce(addr, a.Nonce)
-		statedb.SetBalance(addr, a.Balance)
+		statedb.SetBalance(addr, a.Balance, tracing.BalanceChangeUnspecified)
 		for k, v := range a.Storage {
 			statedb.SetState(addr, k, v)
 		}
@@ -353,7 +363,8 @@ func (t *StateTest) genesis(config *params.ChainConfig) *core.Genesis {
 	}
 }
 
-func (tx *stTransaction) toMessage(ps stPostState, baseFee *big.Int) (core.Message, error) {
+func (tx *stTransaction) toMessage(ps stPostState, baseFee *big.Int) (*core.Message, error) {
+	// Derive sender from private key if present.
 	var from common.Address
 	// If 'sender' field is present, use that
 	if tx.Sender != nil {
@@ -438,8 +449,10 @@ func (tx *stTransaction) toMessage(ps stPostState, baseFee *big.Int) (core.Messa
 		}
 	}
 
-	msg := types.NewMessage(from, to, tx.Nonce, value, gasLimit, gasPrice,
-		tx.MaxFeePerGas, tx.MaxPriorityFeePerGas, data, accessList, false, tx.BlobGasFeeCap, tx.BlobVersionedHashes, authList)
+	msg := core.NewMessage(from, to, tx.Nonce, value, gasLimit, gasPrice,
+		tx.MaxFeePerGas, tx.MaxPriorityFeePerGas, data, accessList, false,
+		tx.BlobGasFeeCap, tx.BlobVersionedHashes, authList,
+	)
 	return msg, nil
 }
 

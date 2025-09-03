@@ -166,7 +166,7 @@ func (b *testBackend) StateAtBlock(ctx context.Context, block *types.Block, reex
 	return statedb, release, nil
 }
 
-func (b *testBackend) StateAtTransaction(ctx context.Context, block *types.Block, txIndex int, reexec uint64) (core.Message, vm.BlockContext, *state.StateDB, StateReleaseFunc, error) {
+func (b *testBackend) StateAtTransaction(ctx context.Context, block *types.Block, txIndex int, reexec uint64) (*types.Transaction, vm.BlockContext, *state.StateDB, StateReleaseFunc, error) {
 	parent := b.chain.GetBlock(block.ParentHash(), block.NumberU64()-1)
 	if parent == nil {
 		return nil, vm.BlockContext{}, nil, nil, errBlockNotFound
@@ -181,11 +181,11 @@ func (b *testBackend) StateAtTransaction(ctx context.Context, block *types.Block
 	// Recompute transactions up to the target index.
 	signer := types.MakeSigner(b.chainConfig, block.Number())
 	for idx, tx := range block.Transactions() {
-		msg, _ := tx.AsMessage(signer, block.BaseFee())
+		msg, _ := core.TransactionToMessage(tx, signer, block.BaseFee())
 		txContext := core.NewEVMTxContext(msg)
 		context := core.NewEVMBlockContext(block.Header(), b.chain, nil)
 		if idx == txIndex {
-			return msg, context, statedb, release, nil
+			return tx, context, statedb, release, nil
 		}
 		vmenv := vm.NewEVM(context, txContext, statedb, b.chainConfig, vm.Config{})
 		if _, err := core.ApplyMessage(vmenv, msg, new(core.GasPool).AddGas(tx.Gas())); err != nil {
@@ -838,6 +838,7 @@ func TestTracingWithOverrides(t *testing.T) {
 	t.Parallel()
 	// Initialize test accounts
 	accounts := newAccounts(3)
+	ecRecoverAddress := common.HexToAddress("0x0000000000000000000000000000000000000001")
 	storageAccount := common.Address{0x13, 37}
 	genesis := &core.Genesis{
 		Config: params.TestChainConfig,
@@ -1021,7 +1022,7 @@ func TestTracingWithOverrides(t *testing.T) {
 					},
 				},
 			},
-			//want: `{"gas":46900,"failed":false,"returnValue":"0000000000000000000000000000000000000000000000000000000000000539"}`,
+			// want: `{"gas":46900,"failed":false,"returnValue":"0000000000000000000000000000000000000000000000000000000000000539"}`,
 			// fakeStorage side effect
 			want: `{"gas":44100,"failed":false,"returnValue":"0000000000000000000000000000000000000000000000000000000000000001"}`,
 		},
@@ -1130,6 +1131,48 @@ func TestTracingWithOverrides(t *testing.T) {
 				},
 			},
 			want: `{"gas":25288,"failed":false,"returnValue":"0000000000000000000000000000000000000000000000000000000000000055"}`,
+		},
+		{ // Call to precompile ECREC (0x01), but code was modified to add 1 to input
+			blockNumber: rpc.LatestBlockNumber,
+			call: ethapi.TransactionArgs{
+				From: &randomAccounts[0].addr,
+				To:   &ecRecoverAddress,
+				Data: newRPCBytes(common.Hex2Bytes("0000000000000000000000000000000000000000000000000000000000000001")),
+			},
+			config: &TraceCallConfig{
+				StateOverrides: &ethapi.StateOverride{
+					randomAccounts[0].addr: ethapi.OverrideAccount{
+						Balance: newRPCBalance(new(big.Int).Mul(big.NewInt(1), big.NewInt(params.Ether))),
+					},
+					ecRecoverAddress: ethapi.OverrideAccount{
+						// The code below adds one to input
+						Code:             newRPCBytes(common.Hex2Bytes("60003560010160005260206000f3")),
+						MovePrecompileTo: &randomAccounts[2].addr,
+					},
+				},
+			},
+			want: `{"gas":21350,"failed":false,"returnValue":"0000000000000000000000000000000000000000000000000000000000000002"}`,
+		},
+		{ // Call to ECREC Precompiled on a different address, expect the original behaviour of ECREC precompile
+			blockNumber: rpc.LatestBlockNumber,
+			call: ethapi.TransactionArgs{
+				From: &randomAccounts[0].addr,
+				To:   &randomAccounts[2].addr, // Moved EcRecover
+				Data: newRPCBytes(common.Hex2Bytes("82f3df49d3645876de6313df2bbe9fbce593f21341a7b03acdb9423bc171fcc9000000000000000000000000000000000000000000000000000000000000001cba13918f50da910f2d55a7ea64cf716ba31dad91856f45908dde900530377d8a112d60f36900d18eb8f9d3b4f85a697b545085614509e3520e4b762e35d0d6bd")),
+			},
+			config: &TraceCallConfig{
+				StateOverrides: &ethapi.StateOverride{
+					randomAccounts[0].addr: ethapi.OverrideAccount{
+						Balance: newRPCBalance(new(big.Int).Mul(big.NewInt(1), big.NewInt(params.Ether))),
+					},
+					ecRecoverAddress: ethapi.OverrideAccount{
+						// The code below adds one to input
+						Code:             newRPCBytes(common.Hex2Bytes("60003560010160005260206000f3")),
+						MovePrecompileTo: &randomAccounts[2].addr, // Move EcRecover to this address
+					},
+				},
+			},
+			want: `{"gas":25664,"failed":false,"returnValue":"000000000000000000000000c6e93f4c1920eaeaa1e699f76a7a8c18e3056074"}`,
 		},
 	}
 	for i, tc := range testSuite {

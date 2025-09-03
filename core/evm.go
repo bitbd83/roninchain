@@ -22,6 +22,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc/eip4844"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 )
@@ -84,11 +85,11 @@ func NewEVMBlockContext(header *types.Header, chain ChainContext, author *common
 }
 
 // NewEVMTxContext creates a new transaction context for a single transaction.
-func NewEVMTxContext(msg Message) vm.TxContext {
+func NewEVMTxContext(msg *Message) vm.TxContext {
 	return vm.TxContext{
-		Origin:     msg.From(),
-		GasPrice:   new(big.Int).Set(msg.GasPrice()),
-		BlobHashes: msg.BlobHashes(),
+		Origin:     msg.From,
+		GasPrice:   new(big.Int).Set(msg.GasPrice),
+		BlobHashes: msg.BlobHashes,
 	}
 }
 
@@ -134,6 +135,6 @@ func CanTransfer(db vm.StateDB, addr common.Address, amount *big.Int) bool {
 
 // Transfer subtracts amount from sender and adds amount to recipient using the given Db
 func Transfer(db vm.StateDB, sender, recipient common.Address, amount *big.Int) {
-	db.SubBalance(sender, amount)
-	db.AddBalance(recipient, amount)
+	db.SubBalance(sender, amount, tracing.BalanceChangeTransfer)
+	db.AddBalance(recipient, amount, tracing.BalanceChangeTransfer)
 }

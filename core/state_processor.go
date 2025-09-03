@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -67,7 +68,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		gp          = new(GasPool).AddGas(block.GasLimit())
 	)
 
-	var receipts = make([]*types.Receipt, 0)
+	receipts := make([]*types.Receipt, 0)
 	// Mutate the block and state according to any hard-fork specs
 	if p.config.DAOForkSupport && p.config.DAOForkBlock != nil && p.config.DAOForkBlock.Cmp(block.Number()) == 0 {
 		misc.ApplyDAOHardFork(statedb)
@@ -89,9 +90,6 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	systemTxs := make([]*types.Transaction, 0, 2)
 
 	posa, isPoSA := p.engine.(consensus.PoSA)
-
-	bloomProcessors := NewAsyncReceiptBloomGenerator(txNum)
-	defer bloomProcessors.Close()
 
 	// Iterate over and process the individual transactions
 	// System transactions should be placed at the end of a block
@@ -123,12 +121,12 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		vmenv.Context.CurrentTransaction = tx
 		// reset counter to start counting opcodes in new transaction
 		vmenv.Context.Counter = 0
-		msg, err := tx.AsMessage(signer, header.BaseFee)
+		msg, err := TransactionToMessage(tx, signer, header.BaseFee)
 		if err != nil {
 			return nil, nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
 		statedb.SetTxContext(tx.Hash(), i)
-		receipt, _, err := applyTransaction(msg, p.config, p.bc, nil, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv, bloomProcessors)
+		receipt, _, err := ApplyMessageWithEVM(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv)
 		if err != nil {
 			return nil, nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
@@ -151,48 +149,63 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 // ProcessParentBlockHash stores the parent block hash in the history storage contract
 // as per EIP-2935.
 func ProcessParentBlockHash(prevHash common.Hash, vmenv *vm.EVM) {
-	msg := types.NewMessage(consensus.SystemAddress, &params.HistoryStorageAddress, 0, common.Big0, 30_000_000, common.Big0, common.Big0, common.Big0, prevHash.Bytes(), nil, false, nil, nil, nil)
+	if tracer := vmenv.Config.Tracer; tracer != nil {
+		if tracer.OnSystemCallStart != nil {
+			tracer.OnSystemCallStart()
+		}
+		onSystemCallStart(tracer, vmenv.GetVMContext())
+		if tracer.OnSystemCallEnd != nil {
+			defer tracer.OnSystemCallEnd()
+		}
+	}
+
+	msg := NewMessage(consensus.SystemAddress, &params.HistoryStorageAddress, 0, common.Big0, 30_000_000, common.Big0, common.Big0, common.Big0, prevHash.Bytes(), nil, false, nil, nil, nil)
 	vmenv.Reset(NewEVMTxContext(msg), vmenv.StateDB)
 	vmenv.StateDB.AddAddressToAccessList(params.HistoryStorageAddress)
-	_, _, err := vmenv.Call(vm.AccountRef(msg.From()), *msg.To(), msg.Data(), 30_000_000, common.Big0)
+	_, _, err := vmenv.Call(vm.AccountRef(msg.From), *msg.To, msg.Data, 30_000_000, common.Big0)
 	if err != nil {
 		log.Error("Failed to store parent block hash in history storage contract", "err", err)
 	}
 	vmenv.StateDB.Finalise(true)
 }
 
-func applyTransaction(
-	msg types.Message,
+func ApplyMessageWithEVM(
+	msg *Message,
 	config *params.ChainConfig,
-	bc ChainContext,
-	author *common.Address,
 	gp *GasPool,
 	statedb *state.StateDB,
 	blockNumber *big.Int,
 	blockHash common.Hash,
 	tx *types.Transaction,
 	usedGas *uint64, evm *vm.EVM,
-	receiptProcessor ReceiptProcessor,
-) (*types.Receipt, *ExecutionResult, error) {
+) (receipt *types.Receipt, result *ExecutionResult, err error) {
+	if evm.Config.Tracer != nil && evm.Config.Tracer.OnTxStart != nil {
+		evm.Config.Tracer.OnTxStart(evm.GetVMContext(), tx, msg.Payer)
+		if evm.Config.Tracer.OnTxEnd != nil {
+			defer func() {
+				evm.Config.Tracer.OnTxEnd(receipt, err)
+			}()
+		}
+	}
 	// Create a new context to be used in the EVM environment.
 	txContext := NewEVMTxContext(msg)
 	evm.Reset(txContext, statedb)
-	from := msg.From()
+	from := msg.From
 
 	// Check if sender and recipient are blacklisted
-	payer := msg.Payer()
+	payer := msg.Payer
 	// After the Venoki hardfork, all addresses now can submit transaction
 	if config.Consortium != nil && config.IsOdysseus(blockNumber) && !config.IsVenoki(blockNumber) {
 		contractAddr := config.BlacklistContractAddress
 		if state.IsAddressBlacklisted(statedb, contractAddr, &from) ||
-			state.IsAddressBlacklisted(statedb, contractAddr, msg.To()) ||
+			state.IsAddressBlacklisted(statedb, contractAddr, msg.To) ||
 			state.IsAddressBlacklisted(statedb, contractAddr, &payer) {
 			return nil, nil, ErrAddressBlacklisted
 		}
 	}
 
 	// Apply the transaction to the current state (included in the env).
-	result, err := ApplyMessage(evm, msg, gp)
+	result, err = ApplyMessage(evm, msg, gp)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -208,7 +221,16 @@ func applyTransaction(
 
 	// Create a new receipt for the transaction, storing the intermediate root and gas used
 	// by the tx.
-	receipt := &types.Receipt{Type: tx.Type(), PostState: root, CumulativeGasUsed: *usedGas}
+	receipt = MakeReceipt(evm, result, statedb, blockNumber, blockHash, tx, *usedGas, root)
+
+	return receipt, result, err
+}
+
+// MakeReceipt generates the receipt object for a transaction given its execution result.
+func MakeReceipt(evm *vm.EVM, result *ExecutionResult, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas uint64, root []byte) *types.Receipt {
+	// Create a new receipt for the transaction, storing the intermediate root and gas used
+	// by the tx.
+	receipt := &types.Receipt{Type: tx.Type(), PostState: root, CumulativeGasUsed: usedGas}
 	if result.Failed() {
 		receipt.Status = types.ReceiptStatusFailed
 	} else {
@@ -223,19 +245,17 @@ func applyTransaction(
 	}
 
 	// If the transaction created a contract, store the creation address in the receipt.
-	if msg.To() == nil {
+	if tx.To() == nil {
 		receipt.ContractAddress = crypto.CreateAddress(evm.TxContext.Origin, tx.Nonce())
 	}
 
 	// Set the receipt logs and create the bloom filter.
 	receipt.Logs = statedb.GetLogs(tx.Hash(), blockNumber.Uint64(), blockHash, evm.Context.Time)
+	receipt.Bloom = types.CreateReceiptBloom(receipt)
 	receipt.BlockHash = blockHash
 	receipt.BlockNumber = blockNumber
 	receipt.TransactionIndex = uint(statedb.TxIndex())
-	// create the bloom filter
-	receiptProcessor.Apply(receipt)
-
-	return receipt, result, err
+	return receipt
 }
 
 // ApplyTransaction attempts to apply a transaction to the given state database
@@ -252,15 +272,22 @@ func ApplyTransaction(
 	tx *types.Transaction,
 	usedGas *uint64,
 	cfg vm.Config,
-	receiptProcessors ReceiptProcessor,
 	publishEvents ...*vm.PublishEvent,
 ) (*types.Receipt, *ExecutionResult, error) {
-	msg, err := tx.AsMessage(types.MakeSigner(config, header.Number), header.BaseFee)
+	msg, err := TransactionToMessage(tx, types.MakeSigner(config, header.Number), header.BaseFee)
 	if err != nil {
 		return nil, nil, err
 	}
 	// Create a new context to be used in the EVM environment
 	blockContext := NewEVMBlockContext(header, bc, author, publishEvents...)
 	vmenv := vm.NewEVM(blockContext, vm.TxContext{}, statedb, config, cfg)
-	return applyTransaction(msg, config, bc, author, gp, statedb, header.Number, header.Hash(), tx, usedGas, vmenv, receiptProcessors)
+	return ApplyMessageWithEVM(msg, config, gp, statedb, header.Number, header.Hash(), tx, usedGas, vmenv)
+}
+
+func onSystemCallStart(tracer *tracing.Hooks, ctx *tracing.VMContext) {
+	if tracer.OnSystemCallStartV2 != nil {
+		tracer.OnSystemCallStartV2(ctx)
+	} else if tracer.OnSystemCallStart != nil {
+		tracer.OnSystemCallStart()
+	}
 }

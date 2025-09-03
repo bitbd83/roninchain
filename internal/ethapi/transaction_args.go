@@ -28,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/consensus/misc/eip4844"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto/kzg4844"
 	"github.com/ethereum/go-ethereum/log"
@@ -233,11 +234,7 @@ func (args *TransactionArgs) setDefaults(ctx context.Context, b Backend) error {
 // ToMessage converts the transaction arguments to the Message type used by the
 // core evm. This method is used in calls and traces that do not require a real
 // live transaction.
-func (args *TransactionArgs) ToMessage(globalGasCap uint64, baseFee *big.Int) (types.Message, error) {
-	// Reject invalid combinations of pre- and post-1559 fee styles
-	if args.GasPrice != nil && (args.MaxFeePerGas != nil || args.MaxPriorityFeePerGas != nil) {
-		return types.Message{}, errors.New("both gasPrice and (maxFeePerGas or maxPriorityFeePerGas) specified")
-	}
+func (args *TransactionArgs) ToMessage(globalGasCap uint64, baseFee *big.Int, skipEoACheck bool) *core.Message {
 	// Set sender address or use zero address if none specified.
 	addr := args.from()
 
@@ -300,8 +297,27 @@ func (args *TransactionArgs) ToMessage(globalGasCap uint64, baseFee *big.Int) (t
 	if args.BlobHashes != nil && args.BlobFeeCap == nil {
 		args.BlobFeeCap = new(hexutil.Big)
 	}
-	msg := types.NewMessage(addr, args.To, 0, value, gas, gasPrice, gasFeeCap, gasTipCap, data, accessList, true, (*big.Int)(args.BlobFeeCap), args.BlobHashes, args.AuthorizationList)
-	return msg, nil
+	var nonce uint64
+	if args.Nonce != nil {
+		nonce = uint64(*args.Nonce)
+	}
+	msg := core.NewMessage(
+		addr,
+		args.To,
+		nonce,
+		value,
+		gas,
+		gasPrice,
+		gasFeeCap,
+		gasTipCap,
+		data,
+		accessList,
+		skipEoACheck,
+		(*big.Int)(args.BlobFeeCap),
+		args.BlobHashes,
+		args.AuthorizationList,
+	)
+	return msg
 }
 
 // toTransaction converts the arguments to a transaction.
@@ -472,6 +488,59 @@ func (args *TransactionArgs) setBlobTxSidecar(ctx context.Context) error {
 	} else {
 		args.BlobHashes = hashes
 	}
+	return nil
+}
+
+// CallDefaults sanitizes the transaction arguments, often filling in zero values,
+// for the purpose of eth_call class of RPC methods.
+func (args *TransactionArgs) CallDefaults(globalGasCap uint64, baseFee *big.Int, chainID *big.Int) error {
+	// Reject invalid combinations of pre- and post-1559 fee styles
+	if args.GasPrice != nil && (args.MaxFeePerGas != nil || args.MaxPriorityFeePerGas != nil) {
+		return errors.New("both gasPrice and (maxFeePerGas or maxPriorityFeePerGas) specified")
+	}
+	if args.ChainID == nil {
+		args.ChainID = (*hexutil.Big)(chainID)
+	} else {
+		if have := (*big.Int)(args.ChainID); have.Cmp(chainID) != 0 {
+			return fmt.Errorf("chainId does not match node's (have=%v, want=%v)", have, chainID)
+		}
+	}
+	if args.Gas == nil {
+		gas := globalGasCap
+		if gas == 0 {
+			gas = uint64(math.MaxUint64 / 2)
+		}
+		args.Gas = (*hexutil.Uint64)(&gas)
+	} else {
+		if globalGasCap > 0 && globalGasCap < uint64(*args.Gas) {
+			log.Warn("Caller gas above allowance, capping", "requested", args.Gas, "cap", globalGasCap)
+			args.Gas = (*hexutil.Uint64)(&globalGasCap)
+		}
+	}
+	if args.Nonce == nil {
+		args.Nonce = new(hexutil.Uint64)
+	}
+	if args.Value == nil {
+		args.Value = new(hexutil.Big)
+	}
+	if baseFee == nil {
+		// If there's no basefee, then it must be a non-1559 execution
+		if args.GasPrice == nil {
+			args.GasPrice = new(hexutil.Big)
+		}
+	} else {
+		// A basefee is provided, necessitating 1559-type execution
+		if args.MaxFeePerGas == nil {
+			args.MaxFeePerGas = new(hexutil.Big)
+		}
+		if args.MaxPriorityFeePerGas == nil {
+			args.MaxPriorityFeePerGas = new(hexutil.Big)
+		}
+	}
+	if args.BlobFeeCap == nil && args.BlobHashes != nil {
+		args.BlobFeeCap = new(hexutil.Big)
+	}
+
 	return nil
 }
 

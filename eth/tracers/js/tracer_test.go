@@ -26,9 +26,11 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/holiman/uint256"
 )
 
 type account struct{}
@@ -37,9 +39,9 @@ func (account) SubBalance(amount *big.Int)                          {}
 func (account) AddBalance(amount *big.Int)                          {}
 func (account) SetAddress(common.Address)                           {}
 func (account) Value() *big.Int                                     { return nil }
-func (account) SetBalance(*big.Int)                                 {}
+func (account) SetBalance(*uint256.Int)                             {}
 func (account) SetNonce(uint64)                                     {}
-func (account) Balance() *big.Int                                   { return nil }
+func (account) Balance() *uint256.Int                               { return nil }
 func (account) Address() common.Address                             { return common.Address{} }
 func (account) SetCode(common.Hash, []byte)                         {}
 func (account) ForEachStorage(cb func(key, value common.Hash) bool) {}
@@ -60,9 +62,9 @@ func testCtx() *vmContext {
 	return &vmContext{blockCtx: vm.BlockContext{BlockNumber: big.NewInt(1)}, txCtx: vm.TxContext{GasPrice: big.NewInt(100000)}}
 }
 
-func runTrace(tracer tracers.Tracer, vmctx *vmContext, chaincfg *params.ChainConfig, contractCode []byte) (json.RawMessage, error) {
+func runTrace(tracer *tracers.Tracer, vmctx *vmContext, chaincfg *params.ChainConfig, contractCode []byte) (json.RawMessage, error) {
 	var (
-		env             = vm.NewEVM(vmctx.blockCtx, vmctx.txCtx, &dummyStatedb{}, chaincfg, vm.Config{Tracer: tracer})
+		env             = vm.NewEVM(vmctx.blockCtx, vmctx.txCtx, &dummyStatedb{}, chaincfg, vm.Config{Tracer: tracer.Hooks})
 		gasLimit uint64 = 31000
 		startGas uint64 = 10000
 		value           = big.NewInt(0)
@@ -73,12 +75,12 @@ func runTrace(tracer tracers.Tracer, vmctx *vmContext, chaincfg *params.ChainCon
 		contract.Code = contractCode
 	}
 
-	tracer.CaptureTxStart(gasLimit, nil)
-	tracer.CaptureStart(env, contract.Caller(), contract.Address(), false, []byte{}, startGas, value)
+	tracer.OnTxStart(env.GetVMContext(), types.NewTx(&types.LegacyTx{Gas: gasLimit}), contract.Caller())
+	tracer.OnEnter(0, byte(vm.CALL), contract.Caller(), contract.Address(), []byte{}, startGas, value, 0)
 	ret, err := env.Interpreter().Run(contract, []byte{}, false)
-	tracer.CaptureEnd(ret, startGas-contract.Gas, err)
+	tracer.OnExit(0, ret, startGas-contract.Gas, err, true)
 	// Rest gas assumes no refund
-	tracer.CaptureTxEnd(contract.Gas)
+	tracer.OnTxEnd(&types.Receipt{GasUsed: gasLimit - contract.Gas}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -88,11 +90,12 @@ func runTrace(tracer tracers.Tracer, vmctx *vmContext, chaincfg *params.ChainCon
 func TestTracer(t *testing.T) {
 	execTracer := func(code string, contract []byte) ([]byte, string) {
 		t.Helper()
-		tracer, err := newJsTracer(code, nil, nil)
+		chainConfig := params.TestChainConfig
+		tracer, err := newJsTracer(code, nil, nil, chainConfig)
 		if err != nil {
 			t.Fatal(err)
 		}
-		ret, err := runTrace(tracer, testCtx(), params.TestChainConfig, contract)
+		ret, err := runTrace(tracer, testCtx(), chainConfig, contract)
 		if err != nil {
 			return nil, err.Error() // Stringify to allow comparison without nil checks
 		}
@@ -162,7 +165,8 @@ func TestTracer(t *testing.T) {
 
 func TestHalt(t *testing.T) {
 	timeout := errors.New("stahp")
-	tracer, err := newJsTracer("{step: function() { while(1); }, result: function() { return null; }, fault: function(){}}", nil, nil)
+	chainConfig := params.TestChainConfig
+	tracer, err := newJsTracer("{step: function() { while(1); }, result: function() { return null; }, fault: function(){}}", nil, nil, chainConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,19 +180,21 @@ func TestHalt(t *testing.T) {
 }
 
 func TestHaltBetweenSteps(t *testing.T) {
-	tracer, err := newJsTracer("{step: function() {}, fault: function() {}, result: function() { return null; }}", nil, nil)
+	chainConfig := params.TestChainConfig
+	tracer, err := newJsTracer("{step: function() {}, fault: function() {}, result: function() { return null; }}", nil, nil, chainConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := vm.NewEVM(vm.BlockContext{BlockNumber: big.NewInt(1)}, vm.TxContext{GasPrice: big.NewInt(1)}, &dummyStatedb{}, params.TestChainConfig, vm.Config{Tracer: tracer})
 	scope := &vm.ScopeContext{
 		Contract: vm.NewContract(&account{}, &account{}, big.NewInt(0), 0),
 	}
-	tracer.CaptureStart(env, common.Address{}, common.Address{}, false, []byte{}, 0, big.NewInt(0))
-	tracer.CaptureState(0, 0, 0, 0, scope, nil, 0, nil)
+	env := vm.NewEVM(vm.BlockContext{BlockNumber: big.NewInt(1)}, vm.TxContext{GasPrice: big.NewInt(1)}, &dummyStatedb{}, params.TestChainConfig, vm.Config{Tracer: tracer.Hooks})
+	tracer.OnTxStart(env.GetVMContext(), types.NewTx(&types.LegacyTx{}), common.Address{})
+	tracer.OnEnter(0, byte(vm.CALL), common.Address{}, common.Address{}, []byte{}, 0, big.NewInt(0), 0)
+	tracer.OnOpcode(0, 0, 0, 0, scope, nil, 0, nil)
 	timeout := errors.New("stahp")
 	tracer.Stop(timeout)
-	tracer.CaptureState(0, 0, 0, 0, scope, nil, 0, nil)
+	tracer.OnOpcode(0, 0, 0, 0, scope, nil, 0, nil)
 
 	if _, err := tracer.GetResult(); !strings.Contains(err.Error(), timeout.Error()) {
 		t.Errorf("Expected timeout error, got %v", err)
@@ -200,13 +206,15 @@ func TestHaltBetweenSteps(t *testing.T) {
 func TestNoStepExec(t *testing.T) {
 	execTracer := func(code string) []byte {
 		t.Helper()
-		tracer, err := newJsTracer(code, nil, nil)
+		chainConfig := params.TestChainConfig
+		tracer, err := newJsTracer(code, nil, nil, chainConfig)
 		if err != nil {
 			t.Fatal(err)
 		}
-		env := vm.NewEVM(vm.BlockContext{BlockNumber: big.NewInt(1)}, vm.TxContext{GasPrice: big.NewInt(100)}, &dummyStatedb{}, params.TestChainConfig, vm.Config{Tracer: tracer})
-		tracer.CaptureStart(env, common.Address{}, common.Address{}, false, []byte{}, 1000, big.NewInt(0))
-		tracer.CaptureEnd(nil, 0, nil)
+		env := vm.NewEVM(vm.BlockContext{BlockNumber: big.NewInt(1)}, vm.TxContext{GasPrice: big.NewInt(100)}, &dummyStatedb{}, chainConfig, vm.Config{Tracer: tracer.Hooks})
+		tracer.OnTxStart(env.GetVMContext(), types.NewTx(&types.LegacyTx{}), common.Address{})
+		tracer.OnEnter(0, byte(vm.CALL), common.Address{}, common.Address{}, []byte{}, 1000, big.NewInt(0), 0)
+		tracer.OnExit(0, nil, 0, nil, false)
 		ret, err := tracer.GetResult()
 		if err != nil {
 			t.Fatal(err)
@@ -229,12 +237,12 @@ func TestNoStepExec(t *testing.T) {
 }
 
 func TestIsPrecompile(t *testing.T) {
-	chaincfg := &params.ChainConfig{ChainID: big.NewInt(1), HomesteadBlock: big.NewInt(0), DAOForkBlock: nil, DAOForkSupport: false, EIP150Block: big.NewInt(0), EIP150Hash: common.Hash{}, EIP155Block: big.NewInt(0), EIP158Block: big.NewInt(0), ByzantiumBlock: big.NewInt(100), ConstantinopleBlock: big.NewInt(0), PetersburgBlock: big.NewInt(0), IstanbulBlock: big.NewInt(200), MuirGlacierBlock: big.NewInt(0), BerlinBlock: big.NewInt(300), LondonBlock: big.NewInt(0), TerminalTotalDifficulty: nil, Ethash: new(params.EthashConfig), Clique: nil}
+	chaincfg := &params.ChainConfig{ChainID: big.NewInt(1), HomesteadBlock: big.NewInt(0), DAOForkBlock: nil, DAOForkSupport: false, EIP150Block: big.NewInt(0), EIP155Block: big.NewInt(0), EIP158Block: big.NewInt(0), ByzantiumBlock: big.NewInt(100), ConstantinopleBlock: big.NewInt(0), PetersburgBlock: big.NewInt(0), IstanbulBlock: big.NewInt(200), MuirGlacierBlock: big.NewInt(0), BerlinBlock: big.NewInt(300), LondonBlock: big.NewInt(0), TerminalTotalDifficulty: nil, Ethash: new(params.EthashConfig), Clique: nil}
 	chaincfg.ByzantiumBlock = big.NewInt(100)
 	chaincfg.IstanbulBlock = big.NewInt(200)
 	chaincfg.BerlinBlock = big.NewInt(300)
 	txCtx := vm.TxContext{GasPrice: big.NewInt(100000)}
-	tracer, err := newJsTracer("{addr: toAddress('0000000000000000000000000000000000000009'), res: null, step: function() { this.res = isPrecompiled(this.addr); }, fault: function() {}, result: function() { return this.res; }}", nil, nil)
+	tracer, err := newJsTracer("{addr: toAddress('0000000000000000000000000000000000000009'), res: null, step: function() { this.res = isPrecompiled(this.addr); }, fault: function() {}, result: function() { return this.res; }}", nil, nil, chaincfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +256,7 @@ func TestIsPrecompile(t *testing.T) {
 		t.Errorf("tracer should not consider blake2f as precompile in byzantium")
 	}
 
-	tracer, _ = newJsTracer("{addr: toAddress('0000000000000000000000000000000000000009'), res: null, step: function() { this.res = isPrecompiled(this.addr); }, fault: function() {}, result: function() { return this.res; }}", nil, nil)
+	tracer, _ = newJsTracer("{addr: toAddress('0000000000000000000000000000000000000009'), res: null, step: function() { this.res = isPrecompiled(this.addr); }, fault: function() {}, result: function() { return this.res; }}", nil, nil, chaincfg)
 	blockCtx = vm.BlockContext{BlockNumber: big.NewInt(250)}
 	res, err = runTrace(tracer, &vmContext{blockCtx, txCtx}, chaincfg, nil)
 	if err != nil {
@@ -260,23 +268,24 @@ func TestIsPrecompile(t *testing.T) {
 }
 
 func TestEnterExit(t *testing.T) {
+	chainConfig := params.TestChainConfig
 	// test that either both or none of enter() and exit() are defined
-	if _, err := newJsTracer("{step: function() {}, fault: function() {}, result: function() { return null; }, enter: function() {}}", new(tracers.Context), nil); err == nil {
+	if _, err := newJsTracer("{step: function() {}, fault: function() {}, result: function() { return null; }, enter: function() {}}", new(tracers.Context), nil, chainConfig); err == nil {
 		t.Fatal("tracer creation should've failed without exit() definition")
 	}
-	if _, err := newJsTracer("{step: function() {}, fault: function() {}, result: function() { return null; }, enter: function() {}, exit: function() {}}", new(tracers.Context), nil); err != nil {
+	if _, err := newJsTracer("{step: function() {}, fault: function() {}, result: function() { return null; }, enter: function() {}, exit: function() {}}", new(tracers.Context), nil, chainConfig); err != nil {
 		t.Fatal(err)
 	}
 	// test that the enter and exit method are correctly invoked and the values passed
-	tracer, err := newJsTracer("{enters: 0, exits: 0, enterGas: 0, gasUsed: 0, step: function() {}, fault: function() {}, result: function() { return {enters: this.enters, exits: this.exits, enterGas: this.enterGas, gasUsed: this.gasUsed} }, enter: function(frame) { this.enters++; this.enterGas = frame.getGas(); }, exit: function(res) { this.exits++; this.gasUsed = res.getGasUsed(); }}", new(tracers.Context), nil)
+	tracer, err := newJsTracer("{enters: 0, exits: 0, enterGas: 0, gasUsed: 0, step: function() {}, fault: function() {}, result: function() { return {enters: this.enters, exits: this.exits, enterGas: this.enterGas, gasUsed: this.gasUsed} }, enter: function(frame) { this.enters++; this.enterGas = frame.getGas(); }, exit: function(res) { this.exits++; this.gasUsed = res.getGasUsed(); }}", new(tracers.Context), nil, chainConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
 	scope := &vm.ScopeContext{
 		Contract: vm.NewContract(&account{}, &account{}, big.NewInt(0), 0),
 	}
-	tracer.CaptureEnter(vm.CALL, scope.Contract.Caller(), scope.Contract.Address(), []byte{}, 1000, new(big.Int))
-	tracer.CaptureExit([]byte{}, 400, nil)
+	tracer.OnEnter(1, byte(vm.CALL), scope.Contract.Caller(), scope.Contract.Address(), []byte{}, 1000, new(big.Int), 0)
+	tracer.OnExit(1, []byte{}, 400, nil, false)
 
 	have, err := tracer.GetResult()
 	if err != nil {
@@ -289,8 +298,9 @@ func TestEnterExit(t *testing.T) {
 }
 
 func TestSetup(t *testing.T) {
+	chainConfig := params.TestChainConfig
 	// Test empty config
-	_, err := newJsTracer(`{setup: function(cfg) { if (cfg !== "{}") { throw("invalid empty config") } }, fault: function() {}, result: function() {}}`, new(tracers.Context), nil)
+	_, err := newJsTracer(`{setup: function(cfg) { if (cfg !== "{}") { throw("invalid empty config") } }, fault: function() {}, result: function() {}}`, new(tracers.Context), nil, chainConfig)
 	if err != nil {
 		t.Error(err)
 	}
@@ -300,12 +310,12 @@ func TestSetup(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Test no setup func
-	_, err = newJsTracer(`{fault: function() {}, result: function() {}}`, new(tracers.Context), cfg)
+	_, err = newJsTracer(`{fault: function() {}, result: function() {}}`, new(tracers.Context), cfg, chainConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Test config value
-	tracer, err := newJsTracer("{config: null, setup: function(cfg) { this.config = JSON.parse(cfg) }, step: function() {}, fault: function() {}, result: function() { return this.config.foo }}", new(tracers.Context), cfg)
+	tracer, err := newJsTracer("{config: null, setup: function(cfg) { this.config = JSON.parse(cfg) }, step: function() {}, fault: function() {}, result: function() { return this.config.foo }}", new(tracers.Context), cfg, chainConfig)
 	if err != nil {
 		t.Fatal(err)
 	}

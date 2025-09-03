@@ -18,6 +18,7 @@ package t8ntool
 
 import (
 	"fmt"
+	"io"
 	"math/big"
 	"os"
 
@@ -28,9 +29,11 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
@@ -97,7 +100,7 @@ type rejectedTx struct {
 // Apply applies a set of transactions to a pre-state
 func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig,
 	txs types.Transactions, miningReward int64,
-	getTracerFn func(txIndex int, txHash common.Hash) (tracer vm.EVMLogger, err error),
+	getTracerFn func(txIndex int, txHash common.Hash) (*tracers.Tracer, io.WriteCloser, error),
 ) (*state.StateDB, *ExecutionResult, error) {
 	// Capture errors for BLOCKHASH operation, if we haven't been supplied the
 	// required blockhashes
@@ -148,17 +151,19 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig,
 	}
 
 	for i, tx := range txs {
-		msg, err := tx.AsMessage(signer, pre.Env.BaseFee)
+		msg, err := core.TransactionToMessage(tx, signer, pre.Env.BaseFee)
 		if err != nil {
 			log.Warn("rejected tx", "index", i, "hash", tx.Hash(), "error", err)
 			rejectedTxs = append(rejectedTxs, &rejectedTx{i, err.Error()})
 			continue
 		}
-		tracer, err := getTracerFn(txIndex, tx.Hash())
+		tracer, _, err := getTracerFn(txIndex, tx.Hash())
 		if err != nil {
 			return nil, nil, err
 		}
-		vmConfig.Tracer = tracer
+		if tracer != nil {
+			vmConfig.Tracer = tracer.Hooks
+		}
 		vmConfig.Debug = (tracer != nil)
 		statedb.SetTxContext(tx.Hash(), txIndex)
 		txContext := core.NewEVMTxContext(msg)
@@ -169,7 +174,7 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig,
 		msgResult, err := core.ApplyMessage(evm, msg, gaspool)
 		if err != nil {
 			statedb.RevertToSnapshot(snapshot)
-			log.Info("rejected tx", "index", i, "hash", tx.Hash(), "from", msg.From(), "error", err)
+			log.Info("rejected tx", "index", i, "hash", tx.Hash(), "from", msg.From, "error", err)
 			rejectedTxs = append(rejectedTxs, &rejectedTx{i, err.Error()})
 			continue
 		}
@@ -200,7 +205,7 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig,
 			receipt.GasUsed = msgResult.UsedGas
 
 			// If the transaction created a contract, store the creation address in the receipt.
-			if msg.To() == nil {
+			if msg.To == nil {
 				receipt.ContractAddress = crypto.CreateAddress(evm.TxContext.Origin, tx.Nonce())
 			}
 
@@ -238,9 +243,9 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig,
 			reward.Sub(reward, big.NewInt(0).SetUint64(ommer.Delta))
 			reward.Mul(reward, blockReward)
 			reward.Div(reward, big.NewInt(8))
-			statedb.AddBalance(ommer.Address, reward)
+			statedb.AddBalance(ommer.Address, reward, tracing.BalanceIncreaseRewardMineUncle)
 		}
-		statedb.AddBalance(pre.Env.Coinbase, minerReward)
+		statedb.AddBalance(pre.Env.Coinbase, minerReward, tracing.BalanceIncreaseRewardMineBlock)
 	}
 	// Commit block
 	root, err := statedb.Commit(vmContext.BlockNumber.Uint64(), chainConfig.IsEIP158(vmContext.BlockNumber))
@@ -274,7 +279,7 @@ func MakePreState(db ethdb.Database, accounts types.GenesisAlloc) *state.StateDB
 	for addr, a := range accounts {
 		statedb.SetCode(addr, a.Code)
 		statedb.SetNonce(addr, a.Nonce)
-		statedb.SetBalance(addr, a.Balance)
+		statedb.SetBalance(addr, a.Balance, tracing.BalanceIncreaseGenesisBalance)
 		for k, v := range a.Storage {
 			statedb.SetState(addr, k, v)
 		}

@@ -29,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
@@ -45,10 +46,8 @@ type revision struct {
 	journalIndex int
 }
 
-var (
-	// emptyRoot is the known root hash of an empty trie.
-	emptyRoot = common.HexToHash("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
-)
+// emptyRoot is the known root hash of an empty trie.
+var emptyRoot = common.HexToHash("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
 
 type proofList [][]byte
 
@@ -96,6 +95,7 @@ type StateDB struct {
 	prefetcher *triePrefetcher
 	trie       Trie
 	hasher     crypto.KeccakState
+	logger     *tracing.Hooks
 
 	// originalRoot is the pre-state root, before any changes were made.
 	// It will be updated when the Commit is called.
@@ -208,6 +208,11 @@ func New(root common.Hash, db Database, snaps *snapshot.Tree) (*StateDB, error) 
 	return sdb, nil
 }
 
+// SetLogger sets the logger for account update hooks.
+func (s *StateDB) SetLogger(l *tracing.Hooks) {
+	s.logger = l
+}
+
 // StartPrefetcher initializes a new trie prefetcher to pull in nodes from the
 // state trie concurrently while the state is mutated so that when we reach the
 // commit phase, most of the needed data is already hot.
@@ -247,8 +252,13 @@ func (s *StateDB) AddLog(log *types.Log) {
 	log.TxHash = s.thash
 	log.TxIndex = uint(s.txIndex)
 	log.Index = s.logSize
+
 	s.logs[s.thash] = append(s.logs[s.thash], log)
 	s.logSize++
+
+	if s.logger != nil && s.logger.OnLog != nil {
+		s.logger.OnLog(log)
+	}
 }
 
 // GetLogs returns the logs matching the specified transaction hash, and annotates
@@ -452,25 +462,25 @@ func (s *StateDB) HasSelfDestructed(addr common.Address) bool {
  */
 
 // AddBalance adds amount to the account associated with addr.
-func (s *StateDB) AddBalance(addr common.Address, amount *big.Int) {
+func (s *StateDB) AddBalance(addr common.Address, amount *big.Int, reason tracing.BalanceChangeReason) {
 	stateObject := s.GetOrNewStateObject(addr)
 	if stateObject != nil {
-		stateObject.AddBalance(amount)
+		stateObject.AddBalance(amount, reason)
 	}
 }
 
 // SubBalance subtracts amount from the account associated with addr.
-func (s *StateDB) SubBalance(addr common.Address, amount *big.Int) {
+func (s *StateDB) SubBalance(addr common.Address, amount *big.Int, reason tracing.BalanceChangeReason) {
 	stateObject := s.GetOrNewStateObject(addr)
 	if stateObject != nil {
-		stateObject.SubBalance(amount)
+		stateObject.SubBalance(amount, reason)
 	}
 }
 
-func (s *StateDB) SetBalance(addr common.Address, amount *big.Int) {
+func (s *StateDB) SetBalance(addr common.Address, amount *big.Int, reason tracing.BalanceChangeReason) {
 	stateObject := s.GetOrNewStateObject(addr)
 	if stateObject != nil {
-		stateObject.SetBalance(amount)
+		stateObject.SetBalance(amount, reason)
 	}
 }
 
@@ -519,7 +529,7 @@ func (s *StateDB) SetStorage(addr common.Address, storage map[common.Hash]common
 	if obj != nil {
 		newObj.SetCode(common.BytesToHash(obj.CodeHash()), obj.code)
 		newObj.SetNonce(obj.Nonce())
-		newObj.SetBalance(obj.Balance())
+		newObj.SetBalance(obj.Balance(), tracing.BalanceChangeUnspecified)
 	}
 }
 
@@ -533,13 +543,20 @@ func (s *StateDB) SelfDestruct(addr common.Address) bool {
 	if stateObject == nil {
 		return false
 	}
+	var (
+		prev = new(big.Int).Set(stateObject.Balance())
+		n    = new(big.Int)
+	)
 	s.journal.append(selfDestructChange{
 		account:     &addr,
 		prev:        stateObject.selfDestructed,
-		prevbalance: new(big.Int).Set(stateObject.Balance()),
+		prevbalance: prev,
 	})
+	if s.logger != nil && s.logger.OnBalanceChange != nil && prev.Sign() > 0 {
+		s.logger.OnBalanceChange(addr, prev, n, tracing.BalanceDecreaseSelfdestruct)
+	}
 	stateObject.markSelfdestructed()
-	stateObject.data.Balance = new(big.Int)
+	stateObject.data.Balance = n
 
 	return true
 }
@@ -815,8 +832,9 @@ func (s *StateDB) Copy() *StateDB {
 		// to the snapshot tree, we need to copy that as well. Otherwise, any
 		// block mined by ourselves will cause gaps in the tree, and force the
 		// miner to operate trie-backed only.
-		snaps: s.snaps,
-		snap:  s.snap,
+		snaps:  s.snaps,
+		snap:   s.snap,
+		logger: s.logger,
 	}
 	// Deep copy cached state objects.
 	for addr, obj := range s.stateObjects {
@@ -905,6 +923,10 @@ func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 			delete(s.stateObjects, obj.address)
 			s.markDelete(addr)
 
+			// If ether was sent to account post-selfdestruct it is burnt.
+			if bal := obj.Balance(); s.logger != nil && s.logger.OnBalanceChange != nil && obj.selfDestructed && bal.Sign() != 0 {
+				s.logger.OnBalanceChange(obj.address, bal, new(big.Int), tracing.BalanceDecreaseSelfdestructBurn)
+			}
 			// We need to maintain account deletions explicitly (will remain
 			// set indefinitely). Note only the first occurred self-destruct
 			// event is tracked.
