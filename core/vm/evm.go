@@ -23,6 +23,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/vm/tracer"
 	"github.com/ethereum/go-ethereum/log"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -36,7 +37,7 @@ import (
 var emptyCodeHash = crypto.Keccak256Hash(nil)
 
 type OpEvent interface {
-	Publish(op OpCode, order, blockHeight uint64, blockHash common.Hash, timestamp uint64, txHash common.Hash, from, to common.Address, value *big.Int, input, output []byte, err error) *types.InternalTransaction
+	Publish(op OpCode, parentCounter, order, blockHeight uint64, blockHash common.Hash, timestamp uint64, txHash common.Hash, from, to common.Address, value *big.Int, input, output []byte, err error) *types.InternalTransaction
 }
 
 type (
@@ -159,7 +160,8 @@ type EVM struct {
 
 	precompiles PrecompiledContracts
 
-	evmHook EVMHook
+	evmHook           EVMHook
+	callStackRecorder *tracer.CallStackRecorder
 }
 
 type EVMHook interface {
@@ -171,12 +173,17 @@ type EVMHook interface {
 // only ever be used *once*.
 func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb StateDB, chainConfig *params.ChainConfig, config Config) *EVM {
 	evm := &EVM{
-		Context:     blockCtx,
-		TxContext:   txCtx,
-		StateDB:     statedb,
-		Config:      config,
-		chainConfig: chainConfig,
-		chainRules:  chainConfig.Rules(blockCtx.BlockNumber),
+		Context:           blockCtx,
+		TxContext:         txCtx,
+		StateDB:           statedb,
+		Config:            config,
+		chainConfig:       chainConfig,
+		chainRules:        chainConfig.Rules(blockCtx.BlockNumber),
+		callStackRecorder: tracer.NewCallStackRecorder(),
+	}
+	// If the tracer is not set, set it to a noop tracer to make sure call or
+	if evm.Config.Tracer == nil {
+		evm.Config.Tracer = &tracing.Hooks{}
 	}
 	evm.precompiles = activePrecompiledContracts(evm.chainRules)
 	evm.interpreter = NewEVMInterpreter(evm, config)
@@ -645,7 +652,7 @@ func (evm *EVM) resolveCodeHash(addr common.Address) common.Hash {
 func (evm *EVM) ChainConfig() *params.ChainConfig { return evm.chainConfig }
 
 // PublishEvent executes Publish function from OpEvent if OpCode is found in Context.PublishEvents
-func (evm *EVM) PublishEvent(
+func (evm *EVM) publishEvent(
 	opCode OpCode,
 	counter uint64,
 	from, to common.Address,
@@ -665,6 +672,7 @@ func (evm *EVM) PublishEvent(
 			*context.InternalTransactions,
 			event.Publish(
 				opCode,
+				evm.callStackRecorder.GetParentOrder(),
 				counter,
 				evm.Context.BlockNumber.Uint64(),
 				context.BlockHash,
@@ -702,6 +710,7 @@ func (evm *EVM) captureBegin(depth int, typ OpCode, from common.Address, to comm
 	if tracer.OnGasChange != nil {
 		tracer.OnGasChange(0, startGas, tracing.GasChangeCallInitialBalance)
 	}
+	evm.callStackRecorder.CaptureBegin(evm.Context.Counter)
 }
 
 func (evm *EVM) captureEnd(depth int, startGas uint64, leftOverGas uint64, ret []byte, err error) {
@@ -719,6 +728,7 @@ func (evm *EVM) captureEnd(depth int, startGas uint64, leftOverGas uint64, ret [
 	if tracer.OnExit != nil {
 		tracer.OnExit(depth, ret, startGas-leftOverGas, VMErrorFromErr(err), reverted)
 	}
+	evm.callStackRecorder.CaptureEnd()
 }
 
 // GetVMContext provides context about the block being executed as well as state

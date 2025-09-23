@@ -606,7 +606,7 @@ func opCreate(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 	scope.Contract.RefundGas(returnGas, interpreter.evm.Config.Tracer, tracing.GasChangeCallLeftOverRefunded)
 
 	// call publish event to publish CREATE event
-	interpreter.evm.PublishEvent(CREATE, counter, scope.Contract.Address(), addr, bigVal, input, res, suberr)
+	interpreter.evm.publishEvent(CREATE, counter, scope.Contract.Address(), addr, bigVal, input, res, suberr)
 
 	if suberr == ErrExecutionReverted {
 		return res, nil
@@ -645,7 +645,7 @@ func opCreate2(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]
 	scope.Contract.RefundGas(returnGas, interpreter.evm.Config.Tracer, tracing.GasChangeCallLeftOverRefunded)
 
 	// call publish event to publish CREATE2 event
-	interpreter.evm.PublishEvent(CREATE2, counter, scope.Contract.Address(), addr, bigEndowment, input, res, suberr)
+	interpreter.evm.publishEvent(CREATE2, counter, scope.Contract.Address(), addr, bigEndowment, input, res, suberr)
 
 	if suberr == ErrExecutionReverted {
 		return res, nil
@@ -689,7 +689,7 @@ func opCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byt
 	}
 	scope.Contract.RefundGas(returnGas, interpreter.evm.Config.Tracer, tracing.GasChangeCallLeftOverRefunded)
 	// call publish event to publish CALL event
-	interpreter.evm.PublishEvent(CALL, counter, scope.Contract.Address(), toAddr, bigVal, cpyArgs, ret, err)
+	interpreter.evm.publishEvent(CALL, counter, scope.Contract.Address(), toAddr, bigVal, cpyArgs, ret, err)
 	return ret, nil
 }
 
@@ -754,7 +754,7 @@ func opDelegateCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext
 	}
 	scope.Contract.RefundGas(returnGas, interpreter.evm.Config.Tracer, tracing.GasChangeCallLeftOverRefunded)
 	// call publish event to publish CALL event
-	interpreter.evm.PublishEvent(DELEGATECALL, counter, scope.Contract.Address(), toAddr, scope.Contract.Value(), cpyArgs, ret, err)
+	interpreter.evm.publishEvent(DELEGATECALL, counter, scope.Contract.Address(), toAddr, scope.Contract.Value(), cpyArgs, ret, err)
 
 	return ret, nil
 }
