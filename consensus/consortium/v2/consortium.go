@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/tracing"
 
 	"github.com/common-nighthawk/go-figure"
 
@@ -123,6 +125,9 @@ type Consortium struct {
 	isTest             bool
 	testTrippEffective bool
 	testTrippPeriod    bool
+
+	// L2
+	l2Alloc types.GenesisAlloc
 }
 
 // New creates a Consortium delegated proof-of-stake consensus engine
@@ -156,6 +161,13 @@ func New(
 	err := consortium.initContract(common.Address{}, nil)
 	if err != nil {
 		log.Error("Failed to init system contract caller", "err", err)
+	}
+
+	if chainConfig.L2Upgrade != nil {
+		if err := json.Unmarshal(chainConfig.L2Upgrade.Alloc, &consortium.l2Alloc); err != nil {
+			log.Error("Failed to init system contract caller", "err", err)
+			panic(err)
+		}
 	}
 
 	return &consortium
@@ -1222,6 +1234,37 @@ func (c *Consortium) upgradeTransparentProxyCode(blockNumber *big.Int, statedb *
 	}
 }
 
+func (c *Consortium) upgradeL2Alloc(blockNumber *big.Int, statedb *state.StateDB) {
+	if c.chainConfig.L2MigrationBlock != nil && c.chainConfig.L2MigrationBlock.Cmp(blockNumber) == 0 {
+		log.Info("upgrade L2 migration alloc begin", "length", len(c.chainConfig.L2Upgrade.Alloc))
+		eoaCount := 0
+		contractCount := 0
+		nonEmptyCount := 0
+		for address, account := range c.l2Alloc {
+			if statedb.Empty(address) {
+				statedb.CreateAccount(address)
+			} else {
+				log.Warn("account is already existed, force override", "address", address)
+				nonEmptyCount++
+			}
+			if len(account.Code) > 0 {
+				contractCount++
+				statedb.SetCode(address, account.Code)
+			} else {
+				eoaCount++
+			}
+			for key, value := range account.Storage {
+				statedb.SetState(address, key, value)
+			}
+			statedb.SetNonce(address, account.Nonce)
+			if account.Balance != nil && account.Balance.Cmp(big.NewInt(0)) > 0 {
+				statedb.SetBalance(address, account.Balance, tracing.BalanceChangeTouchAccount)
+			}
+		}
+		log.Info("upgrade L2 migration alloc end", "eoaCount", eoaCount, "contractCount", contractCount, "nonEmptyCount", nonEmptyCount)
+	}
+}
+
 func verifyValidatorExtraDataWithContract(
 	validatorInContract []finality.ValidatorWithBlsPub,
 	extraData *finality.HeaderExtraData,
@@ -1348,6 +1391,7 @@ func (c *Consortium) Finalize(chain consensus.ChainHeaderReader, header *types.H
 	}
 	c.upgradeRoninTrustedOrg(header.Number, state)
 	c.upgradeTransparentProxyCode(header.Number, state)
+	c.upgradeL2Alloc(header.Number, state)
 	if len(*transactOpts.EVMContext.InternalTransactions) > 0 {
 		*internalTxs = append(*internalTxs, *transactOpts.EVMContext.InternalTransactions...)
 	}
@@ -1396,6 +1440,7 @@ func (c *Consortium) FinalizeAndAssemble(chain consensus.ChainHeaderReader, head
 	}
 	c.upgradeRoninTrustedOrg(header.Number, state)
 	c.upgradeTransparentProxyCode(header.Number, state)
+	c.upgradeL2Alloc(header.Number, state)
 	// should not happen. Once happen, stop the node is better than broadcast the block
 	if header.GasLimit < header.GasUsed {
 		return nil, nil, errors.New("gas consumption of system txs exceed the gas limit")

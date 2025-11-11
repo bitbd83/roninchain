@@ -18,6 +18,7 @@ package params
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"reflect"
@@ -635,6 +636,7 @@ type ChainConfig struct {
 	ConsortiumV2Contracts       *ConsortiumV2Contracts `json:"consortiumV2Contracts"`
 	RoninTrustedOrgUpgrade      *ContractUpgrade       `json:"roninTrustedOrgUpgrade"`
 	TransparentProxyCodeUpgrade *ContractCodeUpgrade   `json:"transparentProxyCodeUpgrade"`
+	L2Upgrade                   *L2Upgrade             `json:"l2Upgrade"`
 }
 
 type ContractUpgrade struct {
@@ -646,6 +648,10 @@ type ContractCodeUpgrade struct {
 	AxieAddress common.Address `json:"axieAddress"`
 	LandAddress common.Address `json:"landAddress"`
 	Code        hexutil.Bytes  `json:"code"`
+}
+
+type L2Upgrade struct {
+	Alloc json.RawMessage `json:"alloc"`
 }
 
 // EthashConfig is the consensus engine configs for proof-of-work based sealing.
