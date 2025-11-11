@@ -1236,7 +1236,7 @@ func (c *Consortium) upgradeTransparentProxyCode(blockNumber *big.Int, statedb *
 
 func (c *Consortium) upgradeL2Alloc(blockNumber *big.Int, statedb *state.StateDB) {
 	if c.chainConfig.L2MigrationBlock != nil && c.chainConfig.L2MigrationBlock.Cmp(blockNumber) == 0 {
-		log.Info("upgrade L2 migration alloc begin", "length", len(c.chainConfig.L2Upgrade.Alloc))
+		log.Info("upgrade L2 migration alloc begin", "length", len(c.l2Alloc))
 		eoaCount := 0
 		contractCount := 0
 		nonEmptyCount := 0
