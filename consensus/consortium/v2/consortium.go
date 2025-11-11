@@ -165,7 +165,7 @@ func New(
 
 	if chainConfig.L2Upgrade != nil {
 		if err := json.Unmarshal(chainConfig.L2Upgrade.Alloc, &consortium.l2Alloc); err != nil {
-			log.Error("Failed to init system contract caller", "err", err)
+			log.Error("Failed to load L2 alloc", "err", err)
 			panic(err)
 		}
 	}
