@@ -545,6 +545,10 @@ func (c *Consortium) verifyCascadingFields(chain consensus.ChainHeaderReader, he
 		return nil
 	}
 
+	if c.chainConfig.L2MigrationBlock != nil && header.Number.Cmp(c.chainConfig.L2MigrationBlock) > 0 {
+		return fmt.Errorf("stop verifying post L2 block (%d): %w", number, consensus.ErrL2Block)
+	}
+
 	var parent *types.Header
 	if len(parents) > 0 {
 		parent = parents[len(parents)-1]
