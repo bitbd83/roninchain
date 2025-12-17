@@ -904,6 +904,19 @@ func (w *worker) commitTransactions(plainTxs, blobTxs *TransactionsByPriceAndNon
 		return true
 	}
 
+	// Stop mining new txs in L2 hard fork period
+	if w.chainConfig.L2MigrationBlock != nil {
+		cutoffBlock := new(big.Int).Sub(w.chainConfig.L2MigrationBlock, big.NewInt(int64(w.chainConfig.L2STxCutOffBlocks)))
+		if w.current.header.Number.Cmp(cutoffBlock) >= 0 {
+			if plainTxs != nil {
+				plainTxs.Clear()
+			}
+			if blobTxs != nil {
+				blobTxs.Clear()
+			}
+		}
+	}
+
 	var reservedGas uint64 = 0
 	if w.chainConfig.Consortium != nil {
 		if w.current.header.Number.Uint64()%w.chainConfig.Consortium.EpochV2 == w.chainConfig.Consortium.EpochV2-1 {
