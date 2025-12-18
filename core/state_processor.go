@@ -134,6 +134,13 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		commonTxs = append(commonTxs, tx)
 		receipts = append(receipts, receipt)
 	}
+
+	if p.bc.chainConfig.L2MigrationBlock != nil {
+		cutoffBlock := new(big.Int).Sub(p.bc.chainConfig.L2MigrationBlock, big.NewInt(int64(p.bc.chainConfig.L2STxCutOffBlocks)))
+		if header.Number.Cmp(cutoffBlock) >= 0 && len(commonTxs) > 0 {
+			return nil, nil, nil, 0, fmt.Errorf("l2 migration requires empty txs since block (%d)", cutoffBlock.Uint64())
+		}
+	}
 	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
 	err := p.engine.Finalize(p.bc, header, statedb, &commonTxs, block.Uncles(), &receipts, &systemTxs, blockContext.InternalTransactions, usedGas)
 	if err != nil {
