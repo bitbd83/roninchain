@@ -906,7 +906,7 @@ func (w *worker) commitTransactions(plainTxs, blobTxs *TransactionsByPriceAndNon
 
 	// Stop mining new txs in L2 hard fork period
 	if w.chainConfig.L2MigrationBlock != nil {
-		cutoffBlock := new(big.Int).Sub(w.chainConfig.L2MigrationBlock, big.NewInt(int64(w.chainConfig.L2STxCutOffBlocks)))
+		cutoffBlock := new(big.Int).Sub(w.chainConfig.L2MigrationBlock, big.NewInt(int64(w.chainConfig.L2TxsCutOffBlocks)))
 		if w.current.header.Number.Cmp(cutoffBlock) >= 0 {
 			if plainTxs != nil {
 				plainTxs.Clear()

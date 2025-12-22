@@ -136,7 +136,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	}
 
 	if p.bc.chainConfig.L2MigrationBlock != nil {
-		cutoffBlock := new(big.Int).Sub(p.bc.chainConfig.L2MigrationBlock, big.NewInt(int64(p.bc.chainConfig.L2STxCutOffBlocks)))
+		cutoffBlock := new(big.Int).Sub(p.bc.chainConfig.L2MigrationBlock, big.NewInt(int64(p.bc.chainConfig.L2TxsCutOffBlocks)))
 		if header.Number.Cmp(cutoffBlock) >= 0 && len(commonTxs) > 0 {
 			return nil, nil, nil, 0, fmt.Errorf("l2 migration requires empty txs since block (%d)", cutoffBlock.Uint64())
 		}
