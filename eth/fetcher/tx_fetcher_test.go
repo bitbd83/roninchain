@@ -1709,18 +1709,15 @@ func TestTransactionFetcherDropAlternates(t *testing.T) {
 			)
 		},
 		steps: []interface{}{
-			doTxNotify{peer: "A", hashes: []common.Hash{testTxsHashes[0]}, types: []byte{testTxs[0].Type()}, sizes: []uint32{uint32(testTxs[0].Size())}},
+			// Announce without metadata so we can use isScheduled
+			doTxNotify{peer: "A", hashes: []common.Hash{testTxsHashes[0]}},
 			doWait{time: txArriveTimeout, step: true},
-			doTxNotify{peer: "B", hashes: []common.Hash{testTxsHashes[0]}, types: []byte{testTxs[0].Type()}, sizes: []uint32{uint32(testTxs[0].Size())}},
+			doTxNotify{peer: "B", hashes: []common.Hash{testTxsHashes[0]}},
 
 			isScheduled{
-				tracking: map[string][]announce{
-					"A": {
-						{testTxsHashes[0], testTxs[0].Type(), uint32(testTxs[0].Size())},
-					},
-					"B": {
-						{testTxsHashes[0], testTxs[0].Type(), uint32(testTxs[0].Size())},
-					},
+				tracking: map[string][]common.Hash{
+					"A": {testTxsHashes[0]},
+					"B": {testTxsHashes[0]},
 				},
 				fetching: map[string][]common.Hash{
 					"A": {testTxsHashes[0]},
@@ -1729,10 +1726,8 @@ func TestTransactionFetcherDropAlternates(t *testing.T) {
 			doDrop("B"),
 
 			isScheduled{
-				tracking: map[string][]announce{
-					"A": {
-						{testTxsHashes[0], testTxs[0].Type(), uint32(testTxs[0].Size())},
-					},
+				tracking: map[string][]common.Hash{
+					"A": {testTxsHashes[0]},
 				},
 				fetching: map[string][]common.Hash{
 					"A": {testTxsHashes[0]},
@@ -1751,10 +1746,10 @@ func makeInvalidBlobTx() *types.Transaction {
 	blob := &kzg4844.Blob{byte(0xa)}
 	commitment, _ := kzg4844.BlobToCommitment(blob)
 	blobHash := kzg4844.CalcBlobHashV1(sha256.New(), &commitment)
-	cellProof, _ := kzg4844.ComputeCellProofs(blob)
+	proof, _ := kzg4844.ComputeBlobProof(blob, commitment)
 
-	// Mutate the cell proof
-	cellProof[0][0] = 0x0
+	// Mutate the proof to make it invalid
+	proof[0] = 0x0
 
 	blobtx := &types.BlobTx{
 		ChainID:    uint256.MustFromBig(params.MainnetChainConfig.ChainID),
@@ -1765,9 +1760,15 @@ func makeInvalidBlobTx() *types.Transaction {
 		BlobFeeCap: uint256.NewInt(200),
 		BlobHashes: []common.Hash{blobHash},
 		Value:      uint256.NewInt(100),
-		Sidecar:    types.NewBlobTxSidecar(types.BlobSidecarVersion1, []kzg4844.Blob{*blob}, []kzg4844.Commitment{commitment}, cellProof),
+		Sidecar: &types.BlobTxSidecar{
+			Blobs:       []kzg4844.Blob{*blob},
+			Commitments: []kzg4844.Commitment{commitment},
+			Proofs:      []kzg4844.Proof{proof},
+		},
 	}
-	return types.MustSignNewTx(key, types.LatestSigner(params.MainnetChainConfig), blobtx)
+	// Use CancunSigner directly since blob transactions require Cancun
+	signer := types.NewCancunSigner(params.MainnetChainConfig.ChainID)
+	return types.MustSignNewTx(key, signer, blobtx)
 }
 
 // This test ensures that the peer will be disconnected for protocol violation
@@ -1804,25 +1805,25 @@ func TestTransactionProtocolViolation(t *testing.T) {
 				types:  []byte{types.LegacyTxType, types.BlobTxType, types.LegacyTxType},
 				sizes:  []uint32{uint32(testTxs[0].Size()), uint32(badTx.Size()), uint32(testTxs[1].Size())},
 			},
-			isWaiting(map[string][]announce{
+			isWaitingWithMeta(map[string][]announce{
 				"A": {
-					{testTxs[0].Hash(), types.LegacyTxType, uint32(testTxs[0].Size())},
-					{badTx.Hash(), types.BlobTxType, uint32(badTx.Size())},
-					{testTxs[1].Hash(), types.LegacyTxType, uint32(testTxs[1].Size())},
+					{testTxs[0].Hash(), typeptr(types.LegacyTxType), sizeptr(uint32(testTxs[0].Size()))},
+					{badTx.Hash(), typeptr(types.BlobTxType), sizeptr(uint32(badTx.Size()))},
+					{testTxs[1].Hash(), typeptr(types.LegacyTxType), sizeptr(uint32(testTxs[1].Size()))},
 				},
 			}),
 			doWait{time: 0, step: true}, // zero time, but the blob fetching should be scheduled
 
-			isWaiting(map[string][]announce{
+			isWaitingWithMeta(map[string][]announce{
 				"A": {
-					{testTxs[0].Hash(), types.LegacyTxType, uint32(testTxs[0].Size())},
-					{testTxs[1].Hash(), types.LegacyTxType, uint32(testTxs[1].Size())},
+					{testTxs[0].Hash(), typeptr(types.LegacyTxType), sizeptr(uint32(testTxs[0].Size()))},
+					{testTxs[1].Hash(), typeptr(types.LegacyTxType), sizeptr(uint32(testTxs[1].Size()))},
 				},
 			}),
-			isScheduled{
+			isScheduledWithMeta{
 				tracking: map[string][]announce{
 					"A": {
-						{badTx.Hash(), types.BlobTxType, uint32(badTx.Size())},
+						{badTx.Hash(), typeptr(types.BlobTxType), sizeptr(uint32(badTx.Size()))},
 					},
 				},
 				fetching: map[string][]common.Hash{
@@ -1837,10 +1838,10 @@ func TestTransactionProtocolViolation(t *testing.T) {
 			},
 			// Some internal traces are left and will be cleaned by a following drop
 			// operation.
-			isWaiting(map[string][]announce{
+			isWaitingWithMeta(map[string][]announce{
 				"A": {
-					{testTxs[0].Hash(), types.LegacyTxType, uint32(testTxs[0].Size())},
-					{testTxs[1].Hash(), types.LegacyTxType, uint32(testTxs[1].Size())},
+					{testTxs[0].Hash(), typeptr(types.LegacyTxType), sizeptr(uint32(testTxs[0].Size()))},
+					{testTxs[1].Hash(), typeptr(types.LegacyTxType), sizeptr(uint32(testTxs[1].Size()))},
 				},
 			}),
 			isScheduled{},

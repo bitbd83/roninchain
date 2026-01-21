@@ -823,16 +823,23 @@ func (f *TxFetcher) loop() {
 				}
 				delete(f.requests, drop.peer)
 			}
-			// Clean up general announcement tracking
-			if _, ok := f.announces[drop.peer]; ok {
-				for hash := range f.announces[drop.peer] {
-					delete(f.announced[hash], drop.peer)
-					if len(f.announced[hash]) == 0 {
-						delete(f.announced, hash)
+		// Clean up general announcement tracking
+		if _, ok := f.announces[drop.peer]; ok {
+			for hash := range f.announces[drop.peer] {
+				delete(f.announced[hash], drop.peer)
+				if len(f.announced[hash]) == 0 {
+					delete(f.announced, hash)
+				}
+				// Also remove from alternates if the peer was an alternate source
+				if _, ok := f.alternates[hash]; ok {
+					delete(f.alternates[hash], drop.peer)
+					if len(f.alternates[hash]) == 0 {
+						delete(f.alternates, hash)
 					}
 				}
-				delete(f.announces, drop.peer)
 			}
+			delete(f.announces, drop.peer)
+		}
 			// If a request was cancelled, check if anything needs to be rescheduled
 			if request != nil {
 				f.scheduleFetches(timeoutTimer, timeoutTrigger, nil)
