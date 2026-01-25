@@ -140,5 +140,5 @@ func (t *TransactionsByPriceAndNonce) Size() int {
 }
 
 func (t *TransactionsByPriceAndNonce) Clear() {
-	t.heads = TxByPriceAndTime{}
+	t.heads, t.txs = nil, nil
 }
