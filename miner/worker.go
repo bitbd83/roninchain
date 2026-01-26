@@ -904,6 +904,19 @@ func (w *worker) commitTransactions(plainTxs, blobTxs *TransactionsByPriceAndNon
 		return true
 	}
 
+	// Stop mining new txs in L2 hard fork period
+	if w.chainConfig.L2MigrationBlock != nil {
+		cutoffBlock := new(big.Int).Sub(w.chainConfig.L2MigrationBlock, big.NewInt(int64(w.chainConfig.L2TxsCutOffBlocks)))
+		if w.current.header.Number.Cmp(cutoffBlock) >= 0 {
+			if plainTxs != nil {
+				plainTxs.Clear()
+			}
+			if blobTxs != nil {
+				blobTxs.Clear()
+			}
+		}
+	}
+
 	var reservedGas uint64 = 0
 	if w.chainConfig.Consortium != nil {
 		if w.current.header.Number.Uint64()%w.chainConfig.Consortium.EpochV2 == w.chainConfig.Consortium.EpochV2-1 {
@@ -1168,6 +1181,10 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 		header.Coinbase = w.coinbase
 	}
 	if err := w.engine.Prepare(w.chain, header); err != nil {
+		if errors.Is(err, consensus.ErrL2Block) {
+			log.Info("stop processing new blocks and wait for L2 migration", "number", header.Number.Uint64())
+			return
+		}
 		log.Error("Failed to prepare header for mining", "err", err, "number", header.Number.Uint64())
 		return
 	}

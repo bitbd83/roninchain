@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/tracing"
 
 	"github.com/common-nighthawk/go-figure"
 
@@ -123,6 +125,9 @@ type Consortium struct {
 	isTest             bool
 	testTrippEffective bool
 	testTrippPeriod    bool
+
+	// L2
+	l2Alloc types.GenesisAlloc
 }
 
 // New creates a Consortium delegated proof-of-stake consensus engine
@@ -156,6 +161,13 @@ func New(
 	err := consortium.initContract(common.Address{}, nil)
 	if err != nil {
 		log.Error("Failed to init system contract caller", "err", err)
+	}
+
+	if chainConfig.L2Upgrade != nil {
+		if err := json.Unmarshal(chainConfig.L2Upgrade.Alloc, &consortium.l2Alloc); err != nil {
+			log.Error("Failed to load L2 alloc", "err", err)
+			panic(err)
+		}
 	}
 
 	return &consortium
@@ -531,6 +543,10 @@ func (c *Consortium) verifyCascadingFields(chain consensus.ChainHeaderReader, he
 	number := header.Number.Uint64()
 	if number == 0 {
 		return nil
+	}
+
+	if c.chainConfig.L2MigrationBlock != nil && header.Number.Cmp(c.chainConfig.L2MigrationBlock) > 0 {
+		return fmt.Errorf("stop verifying post L2 block (%d): %w", number, consensus.ErrL2Block)
 	}
 
 	var parent *types.Header
@@ -1024,6 +1040,9 @@ func (c *Consortium) getCheckpointValidatorsFromContract(
 // Prepare implements consensus.Engine, preparing all the consensus fields of the
 // header for running the transactions on top.
 func (c *Consortium) Prepare(chain consensus.ChainHeaderReader, header *types.Header) error {
+	if c.chainConfig.L2MigrationBlock != nil && header.Number.Cmp(c.chainConfig.L2MigrationBlock) > 0 {
+		return fmt.Errorf("stop preparing block %d: %w", header.Number.Uint64(), consensus.ErrL2Block)
+	}
 	coinbase, _, _, _ := c.readSignerAndContract()
 	header.Coinbase = coinbase
 	header.Nonce = types.BlockNonce{}
@@ -1219,6 +1238,37 @@ func (c *Consortium) upgradeTransparentProxyCode(blockNumber *big.Int, statedb *
 	}
 }
 
+func (c *Consortium) upgradeL2Alloc(blockNumber *big.Int, statedb *state.StateDB) {
+	if c.chainConfig.L2MigrationBlock != nil && c.chainConfig.L2MigrationBlock.Cmp(blockNumber) == 0 {
+		log.Info("upgrade L2 migration alloc begin", "length", len(c.l2Alloc))
+		eoaCount := 0
+		contractCount := 0
+		nonEmptyCount := 0
+		for address, account := range c.l2Alloc {
+			if statedb.Empty(address) {
+				statedb.CreateAccount(address)
+			} else {
+				log.Warn("account is already existed, force override", "address", address)
+				nonEmptyCount++
+			}
+			if len(account.Code) > 0 {
+				contractCount++
+				statedb.SetCode(address, account.Code)
+			} else {
+				eoaCount++
+			}
+			for key, value := range account.Storage {
+				statedb.SetState(address, key, value)
+			}
+			statedb.SetNonce(address, account.Nonce)
+			if account.Balance != nil && account.Balance.Cmp(big.NewInt(0)) > 0 {
+				statedb.SetBalance(address, account.Balance, tracing.BalanceChangeTouchAccount)
+			}
+		}
+		log.Info("upgrade L2 migration alloc end", "eoaCount", eoaCount, "contractCount", contractCount, "nonEmptyCount", nonEmptyCount)
+	}
+}
+
 func verifyValidatorExtraDataWithContract(
 	validatorInContract []finality.ValidatorWithBlsPub,
 	extraData *finality.HeaderExtraData,
@@ -1345,6 +1395,7 @@ func (c *Consortium) Finalize(chain consensus.ChainHeaderReader, header *types.H
 	}
 	c.upgradeRoninTrustedOrg(header.Number, state)
 	c.upgradeTransparentProxyCode(header.Number, state)
+	c.upgradeL2Alloc(header.Number, state)
 	if len(*transactOpts.EVMContext.InternalTransactions) > 0 {
 		*internalTxs = append(*internalTxs, *transactOpts.EVMContext.InternalTransactions...)
 	}
@@ -1393,6 +1444,7 @@ func (c *Consortium) FinalizeAndAssemble(chain consensus.ChainHeaderReader, head
 	}
 	c.upgradeRoninTrustedOrg(header.Number, state)
 	c.upgradeTransparentProxyCode(header.Number, state)
+	c.upgradeL2Alloc(header.Number, state)
 	// should not happen. Once happen, stop the node is better than broadcast the block
 	if header.GasLimit < header.GasUsed {
 		return nil, nil, errors.New("gas consumption of system txs exceed the gas limit")
