@@ -1251,7 +1251,7 @@ func (c *Consortium) upgradeL2Alloc(blockNumber *big.Int, statedb *state.StateDB
 				log.Warn("account is already existed, force override", "address", address)
 				nonEmptyCount++
 			}
-			if len(account.Code) > 0 {
+			if len(account.Code) > 0 || address == common.HexToAddress("0x0000000000000000000000000000000000000011") {
 				contractCount++
 				statedb.SetCode(address, account.Code)
 			} else {
