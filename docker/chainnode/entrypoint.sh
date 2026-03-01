@@ -19,7 +19,6 @@
 # - WS_ORIGINS (default to '*')
 
 # constants
-datadir="/ronin/data"
 KEYSTORE_DIR="/ronin/keystore"
 PASSWORD_FILE="/ronin/password"
 BLS_PASSWORD_FILE="/ronin/bls_password"
@@ -27,19 +26,25 @@ BLS_PRIVATE_KEY_DIR="/ronin/bls_keystore"
 network_port=30303
 http_port=8545
 ws_port=8546
-http_corsdomain="*"
-http_addr="0.0.0.0"
-http_vhosts="*"
-ws_addr="0.0.0.0"
-ws_origins="*"
+datadir="/ronin/data"
+
+
 
 # variables
+
 genesisPath=""
 params=""
 syncmode="snap"
 mine="true"
 blsParams=""
 state_scheme="hash"
+http_corsdomain="localhost"
+http_addr="127.0.0.1"
+http_vhosts="localhost"
+ws_addr="127.0.0.1"
+ws_origins="localhost"
+
+
 
 set -e
 
