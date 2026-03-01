@@ -12,6 +12,11 @@
 # - NETWORK_PORT (default to 30303)
 # - HTTP_PORT (default to 8545)
 # - WS_PORT (default to 8546)
+# - HTTP_CORSDOMAIN (default to '*')
+# - HTTP_ADDR (default to '0.0.0.0')
+# - HTTP_VHOSTS (default to '*')
+# - WS_ADDR (default to '0.0.0.0')
+# - WS_ORIGINS (default to '*')
 
 # constants
 datadir="/ronin/data"
@@ -22,6 +27,11 @@ BLS_PRIVATE_KEY_DIR="/ronin/bls_keystore"
 network_port=30303
 http_port=8545
 ws_port=8546
+http_corsdomain="*"
+http_addr="0.0.0.0"
+http_vhosts="*"
+ws_addr="0.0.0.0"
+ws_origins="*"
 
 # variables
 genesisPath=""
@@ -47,6 +57,26 @@ fi
 
 if [[ ! -z $WS_PORT ]]; then
   ws_port="$WS_PORT"
+fi
+
+if [[ ! -z $HTTP_CORSDOMAIN ]]; then
+  http_corsdomain="$HTTP_CORSDOMAIN"
+fi
+
+if [[ ! -z $HTTP_ADDR ]]; then
+  http_addr="$HTTP_ADDR"
+fi
+
+if [[ ! -z $HTTP_VHOSTS ]]; then
+  http_vhosts="$HTTP_VHOSTS"
+fi
+
+if [[ ! -z $WS_ADDR ]]; then
+  ws_addr="$WS_ADDR"
+fi
+
+if [[ ! -z $WS_ORIGINS ]]; then
+  ws_origins="$WS_ORIGINS"
 fi
 
 if [[ ! -z $STATE_SCHEME ]]; then
@@ -351,14 +381,14 @@ exec ronin $params \
   --txpool.globalqueue 10000 \
   --txpool.globalslots 10000 \
   --http \
-  --http.corsdomain "*" \
-  --http.addr 0.0.0.0 \
+  --http.corsdomain "$http_corsdomain" \
+  --http.addr $http_addr \
   --http.port $http_port \
-  --http.vhosts "*" \
+  --http.vhosts "$http_vhosts" \
   --ws \
-  --ws.addr 0.0.0.0 \
+  --ws.addr $ws_addr \
   --ws.port $ws_port \
-  --ws.origins "*" \
+  --ws.origins "$ws_origins" \
   --allow-insecure-unlock \
   $blsParams \
   "$@"

@@ -6,7 +6,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_REPOSITORY: ronin-chain/ronin
+  IMAGE_REPOSITORY: bitbd83/roninchain
   DOCKER_FILE: Dockerfile
 jobs:
   push_to_docker_registry:
